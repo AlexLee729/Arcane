@@ -1,6 +1,6 @@
 # ArcaneGPT
 
-ArcaneGPT is a simple GPT model developed as a learning project. The model is configured with 119 million parameters and runs on Silicon Macbooks. 
+ArcaneGPT is a simple GPT model developed as a learning project. The file `config.py` is currently set up to run on Silicon Macbooks.
 
 ## Installation
 
