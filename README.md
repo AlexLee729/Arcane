@@ -1,6 +1,6 @@
-# ArcaneGPT
+# Arcane
 
-ArcaneGPT is a simple GPT model developed as a learning project. The file `config.py` is currently set up to run on Silicon Macbooks.
+Arcane is a simple GPT model developed as a learning project. The file `config.py` is currently set up to run on Silicon Macbooks.
 
 ## Installation
 
