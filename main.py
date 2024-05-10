@@ -3,7 +3,7 @@ from config import *
 from model import GPTLanguageModel
 from train import training_loop
 
-MAX_NEW_TOKENS = 300
+MAX_NEW_TOKENS = 100
 TEMPERATURE = 1 
 
 def sample(prompt):
@@ -11,10 +11,8 @@ def sample(prompt):
     model = GPTLanguageModel().to(device)
     model.load_state_dict(torch.load(gpt_model_path))
 
-    # Get the tokenizer
+    # Encode the prompt
     enc = tiktoken.get_encoding("gpt2")
-
-    # Encode the input prompt
     prompt_tokens = enc.encode(prompt)
     context = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
 

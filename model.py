@@ -4,10 +4,6 @@ from torch.nn import functional as F
 from config import *
 
 class Head(nn.Module):
-    """
-    Multi-head self-attention mechanism.
-    """
-
     def __init__(self, head_size):
         super().__init__()
         self.key = nn.Linear(n_embd, head_size, bias=False)
@@ -18,24 +14,21 @@ class Head(nn.Module):
 
     def forward(self, x):
         B, T, C = x.shape
-        k = self.key(x)   # (B,T,hs)
-        q = self.query(x) # (B,T,hs)
+        k = self.key(x)
+        q = self.query(x)
         
         # Compute attention scores ("affinities")
         wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-        wei = F.softmax(wei, dim=-1) # (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # Mask out upper triangular elements: (B, T, T)
+        wei = F.softmax(wei, dim=-1) # Apply softmax along the last dimension: (B, T, T)
         wei = self.dropout(wei)
         
         # Perform the weighted aggregation of the values
-        v = self.value(x) # (B,T,hs)
-        out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
+        v = self.value(x) # Compute values: (B,T,hs)
+        out = wei @ v # Weighted aggregation: (B, T, T) @ (B, T, hs) -> (B, T, hs)
         return out
 
 class MultiHeadAttention(nn.Module):
-    """
-    Multi-head attention mechanism.
-    """
 
     def __init__(self, num_heads, head_size):
         super().__init__()
@@ -49,26 +42,22 @@ class MultiHeadAttention(nn.Module):
         return out
 
 class FeedForward(nn.Module):
-    """
-    Feed-forward neural network with ReLU activation.
-    """
 
     def __init__(self, n_embd):
         super().__init__()
-        self.net = nn.Sequential(
+        self.layers = nn.ModuleList([
             nn.Linear(n_embd, 4 * n_embd),
             nn.ReLU(),
             nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(dropout),
-        )
+        ])
 
     def forward(self, x):
-        return self.net(x)
+        for layer in self.layers:
+            x = layer(x)
+        return x
 
 class Block(nn.Module):
-    """
-    Transformer block consisting of multi-head self-attention and feed-forward layers.
-    """
     
     def __init__(self, n_embd, n_head):
         # n_embd: embedding dimension, n_head: the number of heads we'd like
@@ -131,12 +120,12 @@ class GPTLanguageModel(nn.Module):
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature):
-        self.eval()  # Set model to evaluation mode
+        self.eval()
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -block_size:]  # Crop context to last block_size tokens
             logits, _ = self(idx_cond)  # Get logits for next token
             logits = logits[:, -1, :] / temperature  # Apply temperature scaling
             probs = F.softmax(logits, dim=-1)  # Calculate probabilities
-            idx_next = torch.multinomial(probs, num_samples=1)  # Sample next token
-            idx = torch.cat((idx, idx_next), dim=1)  # Append next token to sequence
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat((idx, idx_next), dim=1)
         return idx

@@ -6,11 +6,11 @@ block_size = 512  # Context size used for prediction
 n_embd = 768
 n_head = 12
 n_layer = 8
-dropout = 0.0
+dropout = 0.2
 vocab_size = 40478  # GPT-2 vocabulary size
 
 # Training Hyperparameters
-max_iters = 10000
+max_iters = 50000
 eval_interval = 500
 learning_rate = 6e-4
 eval_iters = 200
