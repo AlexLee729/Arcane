@@ -4,8 +4,7 @@ import tiktoken
 from config import *
 from model import GPTLanguageModel
 from tqdm import tqdm
-from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.tensorboard import SummaryWriter # http://localhost:6006 to see the tensorboard on browser
+from torch.utils.tensorboard import SummaryWriter
 
 # Function to load a pre-trained model
 def load_pretrained_model(model, model_path):
@@ -45,15 +44,17 @@ def evaluate_model(model, data, block_size, batch_size, eval_iters):
 def training_loop(text):
     model = GPTLanguageModel().to(device)
     load_pretrained_model(model, gpt_model_path)
-    print(f"{model.num_parameters()} M parameters")
-
+    print(f"{model.num_parameters()}M parameters")
     train_data, val_data = data_split(text)
-    prev_val_loss = float('inf')
-    optimizer = torch.optim.AdamW(model.parameters(), learning_rate, weight_decay=0.1)
+    
+    if model:
+        prev_val_loss = evaluate_model(model, val_data, block_size, batch_size, eval_iters)
+    else:
+        prev_val_loss = float('inf')
 
+    optimizer = torch.optim.AdamW(model.parameters(), learning_rate)
     warmup_steps = 500
-    scheduler_lambda = lambda step: min((step + 1) / warmup_steps, 1.0)
-    scheduler = LambdaLR(optimizer, lr_lambda=scheduler_lambda)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: min((step + 1) / warmup_steps, 1.0))
 
     val_losses = []
     
@@ -65,6 +66,8 @@ def training_loop(text):
             train_loss = evaluate_model(model, train_data, block_size, batch_size, eval_iters)
             val_loss = evaluate_model(model, val_data, block_size, batch_size, eval_iters)
             val_losses.append(val_loss)
+
+            #print(f"Train loss: {train_loss} | Val Loss: {val_loss}")
             
             # Log metrics to TensorBoard
             writer.add_scalar("Train Loss", train_loss, iter)
@@ -81,15 +84,14 @@ def training_loop(text):
 
         xb, yb = get_batch(train_data, block_size, batch_size)
         logits, loss = model(xb, yb)
+        del logits # delete logits since they arent used
+
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         # Clip gradients to prevent them from becoming too large
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         scheduler.step()
-        
-        # Log training loss at each iteration
-        writer.add_scalar("Training Loss", loss.item(), iter)
 
     # Close TensorBoard writer
     writer.close()

@@ -23,7 +23,7 @@ def save_chunks(chunks, output_dir):
         print(f"Chunk {i} saved to {output_file}")
 
 if __name__ == "__main__":
-    input_file = "Training Files/chats_dataset.txt"
+    input_file = "Training Files/val_split.txt"
     chunk_size_mb = 200 # in megabytes
     output_dir = "Training Files"
 

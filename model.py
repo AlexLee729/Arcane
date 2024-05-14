@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import tiktoken
 from torch.nn import functional as F
 from config import *
 
@@ -41,20 +42,20 @@ class MultiHeadAttention(nn.Module):
         out = self.dropout(self.proj(out))
         return out
 
-class FeedForward(nn.Module):
+class MLP(nn.Module):
 
     def __init__(self, n_embd):
         super().__init__()
-        self.layers = nn.ModuleList([
-            nn.Linear(n_embd, 4 * n_embd),
-            nn.ReLU(),
-            nn.Linear(4 * n_embd, n_embd),
-            nn.Dropout(dropout),
-        ])
+        self.c_fc = nn.Linear(n_embd, 4 * n_embd)
+        self.gelu = nn.GELU()
+        self.c_proj = nn.Linear(4 * n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        for layer in self.layers:
-            x = layer(x)
+        x = self.c_fc(x)
+        x = self.gelu(x)
+        x = self.c_proj(x)
+        x = self.dropout(x)
         return x
 
 class Block(nn.Module):
@@ -64,13 +65,13 @@ class Block(nn.Module):
         super().__init__()
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
-        self.ffwd = FeedForward(n_embd)
+        self.mlp = MLP(n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
 
     def forward(self, x):
         x = x + self.sa(self.ln1(x))
-        x = x + self.ffwd(self.ln2(x))
+        x = x + self.mlp(self.ln2(x))
         return x
 
 class GPTLanguageModel(nn.Module):
@@ -119,13 +120,26 @@ class GPTLanguageModel(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature):
+    def generate(self, prompt, max_new_tokens, temperature, batch_size=10):
         self.eval()
-        for _ in range(max_new_tokens):
-            idx_cond = idx[:, -block_size:]  # Crop context to last block_size tokens
-            logits, _ = self(idx_cond)  # Get logits for next token
-            logits = logits[:, -1, :] / temperature  # Apply temperature scaling
-            probs = F.softmax(logits, dim=-1)  # Calculate probabilities
-            idx_next = torch.multinomial(probs, num_samples=1)
-            idx = torch.cat((idx, idx_next), dim=1)
-        return idx
+        enc = tiktoken.get_encoding("gpt2")
+        prompt_tokens = enc.encode(prompt)
+        idx = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
+
+        generated_tokens = []
+
+        while len(generated_tokens) < max_new_tokens:
+            batch_tokens = []
+            for _ in range(batch_size):
+                idx_cond = idx[:, -block_size:]  # Crop context to last block_size tokens
+                logits, _ = self(idx_cond)  # Get logits for next token
+                logits = logits[:, -1, :] / temperature  # Apply temperature scaling
+                probs = F.softmax(logits, dim=-1)  # Calculate probabilities
+                idx_next = torch.multinomial(probs, num_samples=1)
+                idx = torch.cat((idx, idx_next), dim=1)
+                batch_tokens.append(idx_next.item())
+
+            generated_tokens.extend(batch_tokens)
+
+        result = enc.decode(generated_tokens)
+        return result
