@@ -44,7 +44,7 @@ def evaluate_model(model, data, block_size, batch_size, eval_iters):
 def training_loop(text):
     model = GPTLanguageModel().to(device)
     load_pretrained_model(model, gpt_model_path)
-    print(f"{model.num_parameters()}M parameters")
+    print(f"{model.num_parameters()} M parameters")
     train_data, val_data = data_split(text)
     
     if model:
@@ -57,6 +57,7 @@ def training_loop(text):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: min((step + 1) / warmup_steps, 1.0))
 
     val_losses = []
+    patience = 5
     
     # Initialize TensorBoard writer
     writer = SummaryWriter(log_dir="logs")
@@ -66,8 +67,6 @@ def training_loop(text):
             train_loss = evaluate_model(model, train_data, block_size, batch_size, eval_iters)
             val_loss = evaluate_model(model, val_data, block_size, batch_size, eval_iters)
             val_losses.append(val_loss)
-
-            #print(f"Train loss: {train_loss} | Val Loss: {val_loss}")
             
             # Log metrics to TensorBoard
             writer.add_scalar("Train Loss", train_loss, iter)
@@ -78,7 +77,7 @@ def training_loop(text):
                 prev_val_loss = val_loss
 
             # Early stopping: stop training if validation loss is increasing
-            if len(val_losses) > 3 and val_losses[-1] > val_losses[-2] > val_losses[-3]:
+            if len(val_losses) > patience and all(val_losses[-1] > val_losses[-p] for p in range(1, patience + 1)):
                 print("Validation loss is increasing. Stopping training.")
                 break
 

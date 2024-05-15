@@ -3,7 +3,7 @@ from config import *
 from model import GPTLanguageModel
 from train import training_loop
 
-MAX_NEW_TOKENS = 300
+MAX_NEW_TOKENS = 500
 TEMPERATURE = 1 
 
 def sample(prompt):

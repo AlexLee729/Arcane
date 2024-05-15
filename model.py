@@ -2,59 +2,67 @@ import torch
 import torch.nn as nn
 import tiktoken
 from torch.nn import functional as F
-from config import *
-
-class Head(nn.Module):
-    def __init__(self, head_size):
-        super().__init__()
-        self.key = nn.Linear(n_embd, head_size, bias=False)
-        self.query = nn.Linear(n_embd, head_size, bias=False)
-        self.value = nn.Linear(n_embd, head_size, bias=False)
-        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        B, T, C = x.shape
-        k = self.key(x)
-        q = self.query(x)
-        
-        # Compute attention scores ("affinities")
-        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # Mask out upper triangular elements: (B, T, T)
-        wei = F.softmax(wei, dim=-1) # Apply softmax along the last dimension: (B, T, T)
-        wei = self.dropout(wei)
-        
-        # Perform the weighted aggregation of the values
-        v = self.value(x) # Compute values: (B,T,hs)
-        out = wei @ v # Weighted aggregation: (B, T, T) @ (B, T, hs) -> (B, T, hs)
-        return out
+import config
 
 class MultiHeadAttention(nn.Module):
-
     def __init__(self, num_heads, head_size):
         super().__init__()
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(head_size * num_heads, n_embd)
-        self.dropout = nn.Dropout(dropout)
+        self.num_heads = num_heads
+        self.head_size = head_size
+        
+        self.key = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
+        self.query = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
+        self.value = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
+        self.proj = nn.Linear(num_heads * head_size, config.n_embd)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.dropout(self.proj(out))
+        B, T, C = x.size()
+        
+        # Linear transformation and split into multiple heads
+        k = self.key(x).view(B, T, self.num_heads, self.head_size)
+        q = self.query(x).view(B, T, self.num_heads, self.head_size)
+        v = self.value(x).view(B, T, self.num_heads, self.head_size)
+
+        # Transpose to prepare for matrix multiplication
+        k = k.transpose(1, 2)  # (B, num_heads, T, head_size)
+        q = q.transpose(1, 2)  # (B, num_heads, T, head_size)
+        v = v.transpose(1, 2)  # (B, num_heads, T, head_size)
+
+        # Compute attention scores
+        attention_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_size ** 0.5)  # (B, num_heads, T, T)
+
+        # Mask out upper triangular elements
+        mask = torch.tril(torch.ones(T, T, device=x.device)).unsqueeze(0)  # (1, T, T)
+        attention_scores = attention_scores.masked_fill(mask == 0, float('-inf'))
+
+        # Apply softmax and dropout
+        attention_weights = F.softmax(attention_scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
+
+        # Weighted sum of values
+        out = torch.matmul(attention_weights, v)  # (B, num_heads, T, head_size)
+
+        # Transpose and concatenate heads
+        out = out.transpose(1, 2).contiguous().view(B, T, -1)  # (B, T, num_heads * head_size)
+
+        # Project back to the original dimension
+        out = self.proj(out)
+
         return out
 
 class MLP(nn.Module):
-
     def __init__(self, n_embd):
         super().__init__()
-        self.c_fc = nn.Linear(n_embd, 4 * n_embd)
-        self.gelu = nn.GELU()
-        self.c_proj = nn.Linear(4 * n_embd, n_embd)
-        self.dropout = nn.Dropout(dropout)
+        self.linear = nn.Linear(n_embd, 4 * n_embd)
+        self.activation = nn.GELU()
+        self.proj = nn.Linear(4 * n_embd, n_embd)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
-        x = self.c_fc(x)
-        x = self.gelu(x)
-        x = self.c_proj(x)
+        x = self.linear(x)
+        x = self.activation(x)
+        x = self.proj(x)
         x = self.dropout(x)
         return x
 
@@ -79,11 +87,11 @@ class GPTLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table (gets probability for next token)
-        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
-        self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
-        self.ln_f = nn.LayerNorm(n_embd) # final layer norm
-        self.lm_head = nn.Linear(n_embd, vocab_size)
+        self.token_embedding_table = nn.Embedding(config.vocab_size, config.n_embd)
+        self.position_embedding_table = nn.Embedding(config.block_size, config.n_embd)
+        self.blocks = nn.Sequential(*[Block(config.n_embd, config.n_head) for _ in range(config.n_layer)])
+        self.ln_f = nn.LayerNorm(config.n_embd) # final layer norm
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size)
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -103,7 +111,7 @@ class GPTLanguageModel(nn.Module):
 
         # idx and targets are both (B,T) tensor of integers
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=config.device)) # (T,C)
         x = tok_emb + pos_emb # (B,T,C)
         x = self.blocks(x) # (B,T,C)
         x = self.ln_f(x) # (B,T,C)
@@ -118,27 +126,28 @@ class GPTLanguageModel(nn.Module):
             loss = F.cross_entropy(logits, targets)
 
         return logits, loss
-
+    
     @torch.no_grad()
     def generate(self, prompt, max_new_tokens, temperature, batch_size=10):
         self.eval()
         enc = tiktoken.get_encoding("gpt2")
         prompt_tokens = enc.encode(prompt)
-        idx = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
+        idx = torch.tensor([prompt_tokens], dtype=torch.long, device=self.token_embedding_table.weight.device)
 
         generated_tokens = []
 
         while len(generated_tokens) < max_new_tokens:
             batch_tokens = []
             for _ in range(batch_size):
-                idx_cond = idx[:, -block_size:]  # Crop context to last block_size tokens
-                logits, _ = self(idx_cond)  # Get logits for next token
-                logits = logits[:, -1, :] / temperature  # Apply temperature scaling
-                probs = F.softmax(logits, dim=-1)  # Calculate probabilities
+                idx_cond = idx[:, -config.block_size:] # Crop context to last block_size tokens
+                logits, _ = self(idx_cond) # Get logits for next token
+                logits = logits[:, -1, :] / temperature
+                probs = F.softmax(logits, dim=-1) # Calculate probabilities
                 idx_next = torch.multinomial(probs, num_samples=1)
-                idx = torch.cat((idx, idx_next), dim=1)
-                batch_tokens.append(idx_next.item())
+                batch_tokens.append(idx_next.squeeze().tolist())
 
+            idx_next_batch = torch.tensor(batch_tokens, dtype=torch.long, device=idx.device).unsqueeze(0)
+            idx = torch.cat((idx, idx_next_batch), dim=1)
             generated_tokens.extend(batch_tokens)
 
         result = enc.decode(generated_tokens)
