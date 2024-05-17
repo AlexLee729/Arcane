@@ -21,7 +21,7 @@ if __name__ == "__main__":
     text = open(file, "r", encoding="utf-8").read()
 
     # Train the GPT model
-    training_loop(text)
+    training_loop(text, scheduler=True)
 
     # Sample from the trained model
-    # sample(input("Enter your prompt: "))
+    # sample(input("Enter your prompt: ")) 

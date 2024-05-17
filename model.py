@@ -9,12 +9,16 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         self.head_size = head_size
-        
+        # key, query, value projections for all heads
         self.key = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
         self.query = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
         self.value = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
+        # output projection
         self.proj = nn.Linear(num_heads * head_size, config.n_embd)
+        # regularization
         self.dropout = nn.Dropout(config.dropout)
+        # flash attention makes GPU efficient but only supported in PyTorch >= 2.0
+        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
 
     def forward(self, x):
         B, T, C = x.size()
@@ -24,32 +28,35 @@ class MultiHeadAttention(nn.Module):
         q = self.query(x).view(B, T, self.num_heads, self.head_size)
         v = self.value(x).view(B, T, self.num_heads, self.head_size)
 
-        # Transpose to prepare for matrix multiplication
-        k = k.transpose(1, 2)  # (B, num_heads, T, head_size)
-        q = q.transpose(1, 2)  # (B, num_heads, T, head_size)
-        v = v.transpose(1, 2)  # (B, num_heads, T, head_size)
+        if self.flash:
+            # efficient attention using Flash Attention CUDA kernels
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=config.dropout, is_causal=True)
+        else: # Manual dot product attention
+            # Transpose to prepare for matrix multiplication
+            k = k.transpose(1, 2)  # (B, num_heads, T, head_size)
+            q = q.transpose(1, 2)  # (B, num_heads, T, head_size)
+            v = v.transpose(1, 2)  # (B, num_heads, T, head_size)
 
-        # Compute attention scores
-        attention_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_size ** 0.5)  # (B, num_heads, T, T)
+            # Compute attention scores
+            attention_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_size ** 0.5)  # (B, num_heads, T, T)
 
-        # Mask out upper triangular elements
-        mask = torch.tril(torch.ones(T, T, device=x.device)).unsqueeze(0)  # (1, T, T)
-        attention_scores = attention_scores.masked_fill(mask == 0, float('-inf'))
+            # Mask out upper triangular elements
+            mask = torch.tril(torch.ones(T, T, device=x.device)).unsqueeze(0)  # (1, T, T)
+            attention_scores = attention_scores.masked_fill(mask == 0, float('-inf'))
 
-        # Apply softmax and dropout
-        attention_weights = F.softmax(attention_scores, dim=-1)
-        attention_weights = self.dropout(attention_weights)
+            # Apply softmax and dropout
+            attention_weights = F.softmax(attention_scores, dim=-1)
+            attention_weights = self.dropout(attention_weights)
 
-        # Weighted sum of values
-        out = torch.matmul(attention_weights, v)  # (B, num_heads, T, head_size)
+            # Weighted sum of values
+            y = torch.matmul(attention_weights, v)  # (B, num_heads, T, head_size)
 
         # Transpose and concatenate heads
-        out = out.transpose(1, 2).contiguous().view(B, T, -1)  # (B, T, num_heads * head_size)
+        y = y.transpose(1, 2).contiguous().view(B, T, -1)  # (B, T, num_heads * head_size)
 
         # Project back to the original dimension
-        out = self.proj(out)
-
-        return out
+        y = self.dropout(self.proj(y))
+        return y
 
 class MLP(nn.Module):
     def __init__(self, n_embd):
@@ -95,13 +102,10 @@ class GPTLanguageModel(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-
+        if isinstance(module, nn.Linear) or isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if isinstance(module, nn.Linear) and module.bias is not None:
+                nn.init.zeros_(module.bias)
     def num_parameters(self):
         num_params = sum(p.numel() for p in self.parameters()) / 1e6
         return num_params
@@ -128,7 +132,7 @@ class GPTLanguageModel(nn.Module):
         return logits, loss
     
     @torch.no_grad()
-    def generate(self, prompt, max_new_tokens, temperature, batch_size=10):
+    def generate(self, prompt, max_new_tokens, temperature=1, batch_size=10):
         self.eval()
         enc = tiktoken.get_encoding("gpt2")
         prompt_tokens = enc.encode(prompt)
@@ -139,12 +143,12 @@ class GPTLanguageModel(nn.Module):
         while len(generated_tokens) < max_new_tokens:
             batch_tokens = []
             for _ in range(batch_size):
-                idx_cond = idx[:, -config.block_size:] # Crop context to last block_size tokens
-                logits, _ = self(idx_cond) # Get logits for next token
+                idx_cond = idx[:, -config.block_size:]  # Crop context to last block_size tokens
+                logits, _ = self(idx_cond)  # Get logits for next token
                 logits = logits[:, -1, :] / temperature
-                probs = F.softmax(logits, dim=-1) # Calculate probabilities
+                probs = F.softmax(logits, dim=-1)  # Calculate probabilities
                 idx_next = torch.multinomial(probs, num_samples=1)
-                batch_tokens.append(idx_next.squeeze().tolist())
+                batch_tokens.append(idx_next.item())
 
             idx_next_batch = torch.tensor(batch_tokens, dtype=torch.long, device=idx.device).unsqueeze(0)
             idx = torch.cat((idx, idx_next_batch), dim=1)

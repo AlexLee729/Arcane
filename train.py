@@ -4,7 +4,6 @@ import tiktoken
 from config import *
 from model import GPTLanguageModel
 from tqdm import tqdm
-from torch.utils.tensorboard import SummaryWriter
 
 # Function to load a pre-trained model
 def load_pretrained_model(model, model_path):
@@ -41,7 +40,7 @@ def evaluate_model(model, data, block_size, batch_size, eval_iters):
     return losses.mean()
 
 # Main training loop
-def training_loop(text):
+def training_loop(text, scheduler):
     model = GPTLanguageModel().to(device)
     load_pretrained_model(model, gpt_model_path)
     print(f"{model.num_parameters()} M parameters")
@@ -52,34 +51,24 @@ def training_loop(text):
     else:
         prev_val_loss = float('inf')
 
-    optimizer = torch.optim.AdamW(model.parameters(), learning_rate)
-    warmup_steps = 500
+    optimizer = torch.optim.AdamW(model.parameters(), learning_rate, weight_decay=1e-1)
+
+    warmup_steps = 2000
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: min((step + 1) / warmup_steps, 1.0))
 
     val_losses = []
-    patience = 5
-    
-    # Initialize TensorBoard writer
-    writer = SummaryWriter(log_dir="logs")
 
     for iter in tqdm(range(max_iters)):
         if iter % eval_interval == 0 or iter == max_iters - 1:
             train_loss = evaluate_model(model, train_data, block_size, batch_size, eval_iters)
             val_loss = evaluate_model(model, val_data, block_size, batch_size, eval_iters)
             val_losses.append(val_loss)
-            
-            # Log metrics to TensorBoard
-            writer.add_scalar("Train Loss", train_loss, iter)
-            writer.add_scalar("Validation Loss", val_loss, iter)
+
+            print(f"step {iter}: train loss {train_loss:.4f}, val loss {val_loss:.4f}")
 
             if val_loss < prev_val_loss:
                 torch.save(model.state_dict(), gpt_model_path)
                 prev_val_loss = val_loss
-
-            # Early stopping: stop training if validation loss is increasing
-            if len(val_losses) > patience and all(val_losses[-1] > val_losses[-p] for p in range(1, patience + 1)):
-                print("Validation loss is increasing. Stopping training.")
-                break
 
         xb, yb = get_batch(train_data, block_size, batch_size)
         logits, loss = model(xb, yb)
@@ -90,7 +79,5 @@ def training_loop(text):
         # Clip gradients to prevent them from becoming too large
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
-        scheduler.step()
-
-    # Close TensorBoard writer
-    writer.close()
+        if(scheduler):
+            scheduler.step()
