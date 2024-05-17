@@ -2,7 +2,7 @@ import torch
 import os
 import tiktoken
 from config import *
-from model import GPTLanguageModel
+from model import GPT
 from tqdm import tqdm
 
 # Function to load a pre-trained model
@@ -41,9 +41,8 @@ def evaluate_model(model, data, block_size, batch_size, eval_iters):
 
 # Main training loop
 def training_loop(text, scheduler):
-    model = GPTLanguageModel().to(device)
+    model = GPT().to(device)
     load_pretrained_model(model, gpt_model_path)
-    print(f"{model.num_parameters()} M parameters")
     train_data, val_data = data_split(text)
     
     if model:

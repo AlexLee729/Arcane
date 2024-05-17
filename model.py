@@ -1,27 +1,30 @@
 import torch
 import torch.nn as nn
-import tiktoken
 from torch.nn import functional as F
+
+import tiktoken
 import config
+import math
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
-        self.num_heads = num_heads
-        self.head_size = head_size
-        # key, query, value projections for all heads
+        # Linear layers for key, query, and value projections for all heads
         self.key = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
         self.query = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
         self.value = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
-        # output projection
+        # Output projection layer
         self.proj = nn.Linear(num_heads * head_size, config.n_embd)
-        # regularization
-        self.dropout = nn.Dropout(config.dropout)
-        # flash attention makes GPU efficient but only supported in PyTorch >= 2.0
+        # Dropout for regularization
+        self.resid_dropout = nn.Dropout(config.dropout)
+        self.attn_dropout = nn.Dropout(config.dropout)
+        # Check if flash attention is available (supported in PyTorch >= 2.0)
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        self.num_heads = num_heads
+        self.head_size = head_size
 
     def forward(self, x):
-        B, T, C = x.size()
+        B, T, C = x.size() # Batch size, sequence length, embedding dimension
         
         # Linear transformation and split into multiple heads
         k = self.key(x).view(B, T, self.num_heads, self.head_size)
@@ -31,7 +34,7 @@ class MultiHeadAttention(nn.Module):
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=config.dropout, is_causal=True)
-        else: # Manual dot product attention
+        else:
             # Transpose to prepare for matrix multiplication
             k = k.transpose(1, 2)  # (B, num_heads, T, head_size)
             q = q.transpose(1, 2)  # (B, num_heads, T, head_size)
@@ -44,18 +47,16 @@ class MultiHeadAttention(nn.Module):
             mask = torch.tril(torch.ones(T, T, device=x.device)).unsqueeze(0)  # (1, T, T)
             attention_scores = attention_scores.masked_fill(mask == 0, float('-inf'))
 
-            # Apply softmax and dropout
+            # Apply softmax to get attention weights and apply dropout (Converts attention scores to probabilities)
             attention_weights = F.softmax(attention_scores, dim=-1)
-            attention_weights = self.dropout(attention_weights)
+            attention_weights = self.attn_dropout(attention_weights)
 
             # Weighted sum of values
             y = torch.matmul(attention_weights, v)  # (B, num_heads, T, head_size)
-
-        # Transpose and concatenate heads
         y = y.transpose(1, 2).contiguous().view(B, T, -1)  # (B, T, num_heads * head_size)
 
-        # Project back to the original dimension
-        y = self.dropout(self.proj(y))
+        # Project back to the original dimension and apply dropout
+        y = self.resid_dropout(self.proj(y))
         return y
 
 class MLP(nn.Module):
@@ -89,7 +90,7 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln2(x))
         return x
 
-class GPTLanguageModel(nn.Module):
+class GPT(nn.Module):
 
     def __init__(self):
         super().__init__()
@@ -97,33 +98,50 @@ class GPTLanguageModel(nn.Module):
         self.token_embedding_table = nn.Embedding(config.vocab_size, config.n_embd)
         self.position_embedding_table = nn.Embedding(config.block_size, config.n_embd)
         self.blocks = nn.Sequential(*[Block(config.n_embd, config.n_head) for _ in range(config.n_layer)])
-        self.ln_f = nn.LayerNorm(config.n_embd) # final layer norm
+        self.ln_f = nn.LayerNorm(config.n_embd)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size)
+
+        # init all weights
         self.apply(self._init_weights)
+        # apply special scaled init to the residual projection, per GPT-2 paper
+        for pn, p in self.named_parameters():
+            if pn.endswith('c_proj.weight'):
+                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
+
+        # report number of parameters
+        print("Number of parameters: %.2fM" % (self.get_num_params()))
 
     def _init_weights(self, module):
-        if isinstance(module, nn.Linear) or isinstance(module, nn.Embedding):
+        if isinstance(module, nn.Linear):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if isinstance(module, nn.Linear) and module.bias is not None:
+            if module.bias is not None:
                 nn.init.zeros_(module.bias)
-    def num_parameters(self):
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def get_num_params(self):
         num_params = sum(p.numel() for p in self.parameters()) / 1e6
         return num_params
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
 
-        # idx and targets are both (B,T) tensor of integers
+        # Embeddings
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
         pos_emb = self.position_embedding_table(torch.arange(T, device=config.device)) # (T,C)
         x = tok_emb + pos_emb # (B,T,C)
+
+        # Transformer blocks
         x = self.blocks(x) # (B,T,C)
         x = self.ln_f(x) # (B,T,C)
+
+        # Language model head
         logits = self.lm_head(x) # (B,T,vocab_size)
 
         if targets is None:
             loss = None
         else:
+            # Flatten the logits and targets for cross entropy loss
             B, T, C = logits.shape
             logits = logits.view(B*T, C)
             targets = targets.view(B*T)

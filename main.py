@@ -1,6 +1,6 @@
 import torch
 from config import *
-from model import GPTLanguageModel
+from model import GPT
 from train import training_loop
 
 MAX_NEW_TOKENS = 500
@@ -8,7 +8,7 @@ TEMPERATURE = 1
 
 def sample(prompt):
     # Load the pre-trained GPT model
-    model = GPTLanguageModel().to(device)
+    model = GPT().to(device)
     model.load_state_dict(torch.load(gpt_model_path))
 
     # Generate text based on the prompt
