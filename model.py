@@ -3,24 +3,26 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 import tiktoken
-import config
 import math
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads, head_size):
+    def __init__(self, config):
         super().__init__()
+        self.config = config
+
+        head_size = config.n_embd // config.n_head
         # Linear layers for key, query, and value projections for all heads
-        self.key = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
-        self.query = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
-        self.value = nn.Linear(config.n_embd, num_heads * head_size, bias=False)
+        self.key = nn.Linear(config.n_embd, config.n_head * head_size, bias=config.bias)
+        self.query = nn.Linear(config.n_embd, config.n_head * head_size, bias=config.bias)
+        self.value = nn.Linear(config.n_embd, config.n_head * head_size, bias=config.bias)
         # Output projection layer
-        self.proj = nn.Linear(num_heads * head_size, config.n_embd)
+        self.c_proj = nn.Linear(config.n_head * head_size, config.n_embd)
         # Dropout for regularization
         self.resid_dropout = nn.Dropout(config.dropout)
         self.attn_dropout = nn.Dropout(config.dropout)
         # Check if flash attention is available (supported in PyTorch >= 2.0)
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        self.num_heads = num_heads
+        self.num_heads = config.n_head
         self.head_size = head_size
 
     def forward(self, x):
@@ -33,7 +35,7 @@ class MultiHeadAttention(nn.Module):
 
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=config.dropout, is_causal=True)
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.config.dropout, is_causal=True)
         else:
             # Transpose to prepare for matrix multiplication
             k = k.transpose(1, 2)  # (B, num_heads, T, head_size)
@@ -56,49 +58,50 @@ class MultiHeadAttention(nn.Module):
         y = y.transpose(1, 2).contiguous().view(B, T, -1)  # (B, T, num_heads * head_size)
 
         # Project back to the original dimension and apply dropout
-        y = self.resid_dropout(self.proj(y))
+        y = self.resid_dropout(self.c_proj(y))
         return y
-
+    
 class MLP(nn.Module):
-    def __init__(self, n_embd):
+    def __init__(self, config):
         super().__init__()
-        self.linear = nn.Linear(n_embd, 4 * n_embd)
+        self.linear = nn.Linear(config.n_embd, 4 * config.n_embd, bias=config.bias)
         self.activation = nn.GELU()
-        self.proj = nn.Linear(4 * n_embd, n_embd)
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
         x = self.linear(x)
         x = self.activation(x)
-        x = self.proj(x)
+        x = self.c_proj(x)
         x = self.dropout(x)
         return x
 
 class Block(nn.Module):
     
-    def __init__(self, n_embd, n_head):
-        # n_embd: embedding dimension, n_head: the number of heads we'd like
+    def __init__(self, config):
         super().__init__()
-        head_size = n_embd // n_head
-        self.sa = MultiHeadAttention(n_head, head_size)
-        self.mlp = MLP(n_embd)
-        self.ln1 = nn.LayerNorm(n_embd)
-        self.ln2 = nn.LayerNorm(n_embd)
+        self.sa = MultiHeadAttention(config)
+        self.mlp = MLP(config)
+        self.ln1 = nn.LayerNorm(config.n_embd, bias=config.bias)
+        self.ln2 = nn.LayerNorm(config.n_embd, bias=config.bias)
 
     def forward(self, x):
         x = x + self.sa(self.ln1(x))
         x = x + self.mlp(self.ln2(x))
         return x
-
+    
 class GPT(nn.Module):
 
-    def __init__(self):
+    def __init__(self, config):
         super().__init__()
+        self.config = config
+
         # each token directly reads off the logits for the next token from a lookup table (gets probability for next token)
         self.token_embedding_table = nn.Embedding(config.vocab_size, config.n_embd)
         self.position_embedding_table = nn.Embedding(config.block_size, config.n_embd)
-        self.blocks = nn.Sequential(*[Block(config.n_embd, config.n_head) for _ in range(config.n_layer)])
-        self.ln_f = nn.LayerNorm(config.n_embd)
+
+        self.blocks = nn.Sequential(*[Block(config) for _ in range(config.n_layer)])
+        self.ln_f = nn.LayerNorm(config.n_embd, config.bias)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size)
 
         # init all weights
@@ -108,27 +111,30 @@ class GPT(nn.Module):
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
-        # report number of parameters
         print("Number of parameters: %.2fM" % (self.get_num_params()))
+
+    def get_num_params(self, non_embedding=True):
+        n_params = sum(p.numel() for p in self.parameters())
+        if non_embedding:
+        # Find and exclude parameters from embedding layers
+            embedding_params = sum(p.numel() for module in self.modules() if isinstance(module, nn.Embedding) for p in module.parameters())
+            n_params -= embedding_params
+        return n_params / 1e6
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
-                nn.init.zeros_(module.bias)
+                torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            nn.init.normal_(module.weight, mean=0.0, std=0.02)
-
-    def get_num_params(self):
-        num_params = sum(p.numel() for p in self.parameters()) / 1e6
-        return num_params
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
 
         # Embeddings
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=config.device)) # (T,C)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=self.config.device)) # (T,C)
         x = tok_emb + pos_emb # (B,T,C)
 
         # Transformer blocks
@@ -148,29 +154,23 @@ class GPT(nn.Module):
             loss = F.cross_entropy(logits, targets)
 
         return logits, loss
-    
+
     @torch.no_grad()
-    def generate(self, prompt, max_new_tokens, temperature=1, batch_size=10):
-        self.eval()
+    def generate(self, idx, max_new_tokens, temperature=1.0):
         enc = tiktoken.get_encoding("gpt2")
-        prompt_tokens = enc.encode(prompt)
-        idx = torch.tensor([prompt_tokens], dtype=torch.long, device=self.token_embedding_table.weight.device)
+        for _ in range(max_new_tokens):
+            # if the sequence context is growing too long we must crop it at block_size
+            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
+            # forward the model to get the logits for the index in the sequence
+            logits, _ = self(idx_cond)
+            # pluck the logits at the final step and scale by desired temperature
+            logits = logits[:, -1, :] / temperature
+            # apply softmax to convert logits to (normalized) probabilities
+            probs = F.softmax(logits, dim=-1)
+            # sample from the distribution
+            idx_next = torch.multinomial(probs, num_samples=1)
+            # append sampled index to the running sequence and continue
+            idx = torch.cat((idx, idx_next), dim=1)
+            result = enc.decode(idx)
 
-        generated_tokens = []
-
-        while len(generated_tokens) < max_new_tokens:
-            batch_tokens = []
-            for _ in range(batch_size):
-                idx_cond = idx[:, -config.block_size:]  # Crop context to last block_size tokens
-                logits, _ = self(idx_cond)  # Get logits for next token
-                logits = logits[:, -1, :] / temperature
-                probs = F.softmax(logits, dim=-1)  # Calculate probabilities
-                idx_next = torch.multinomial(probs, num_samples=1)
-                batch_tokens.append(idx_next.item())
-
-            idx_next_batch = torch.tensor(batch_tokens, dtype=torch.long, device=idx.device).unsqueeze(0)
-            idx = torch.cat((idx, idx_next_batch), dim=1)
-            generated_tokens.extend(batch_tokens)
-
-        result = enc.decode(generated_tokens)
         return result

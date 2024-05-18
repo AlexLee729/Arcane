@@ -1,7 +1,6 @@
 import torch
 import os
 import tiktoken
-from config import *
 from model import GPT
 from tqdm import tqdm
 
@@ -12,11 +11,11 @@ def load_pretrained_model(model, model_path):
         print("Pre-trained model loaded.")
 
 # Function to get a batch of data
-def get_batch(data, block_size, batch_size):
-    ix = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[i:i+block_size] for i in ix])  # Input sequences
-    y = torch.stack([data[i+1:i+block_size+1] for i in ix])  # Target sequences
-    return x.to(device), y.to(device)
+def get_batch(data, config):
+    ix = torch.randint(len(data) - config.block_size, (config.batch_size,))
+    x = torch.stack([data[i:i+config.block_size] for i in ix])  # Input sequences
+    y = torch.stack([data[i+1:i+config.block_size+1] for i in ix])  # Target sequences
+    return x.to(config.device), y.to(config.device)
 
 # Function to split data into training and validation sets
 def data_split(text):
@@ -29,39 +28,33 @@ def data_split(text):
 
 # Function to evaluate the model
 @torch.no_grad()
-def evaluate_model(model, data, block_size, batch_size, eval_iters):
+def evaluate_model(model, data, config):
     model.eval()
-    losses = torch.zeros(eval_iters)
-    for k in range(eval_iters):
-        X, Y = get_batch(data, block_size, batch_size)
+    losses = torch.zeros(config.eval_iters)
+    for k in range(config.eval_iters):
+        X, Y = get_batch(data, config)
         _, loss = model(X, Y)
         losses[k] = loss.item()
     model.train()
     return losses.mean()
 
 # Main training loop
-def training_loop(text, scheduler):
-    model = GPT().to(device)
+def training_loop(text, gpt_model_path, config):
+    model = GPT(config).to(config.device)
     load_pretrained_model(model, gpt_model_path)
     train_data, val_data = data_split(text)
     
-    if model:
-        prev_val_loss = evaluate_model(model, val_data, block_size, batch_size, eval_iters)
-    else:
-        prev_val_loss = float('inf')
+    prev_val_loss = evaluate_model(model, val_data, config)
 
-    optimizer = torch.optim.AdamW(model.parameters(), learning_rate, weight_decay=1e-1)
+    optimizer = torch.optim.AdamW(model.parameters(), config.learning_rate, weight_decay=1e-1)
 
     warmup_steps = 2000
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: min((step + 1) / warmup_steps, 1.0))
 
-    val_losses = []
-
-    for iter in tqdm(range(max_iters)):
-        if iter % eval_interval == 0 or iter == max_iters - 1:
-            train_loss = evaluate_model(model, train_data, block_size, batch_size, eval_iters)
-            val_loss = evaluate_model(model, val_data, block_size, batch_size, eval_iters)
-            val_losses.append(val_loss)
+    for iter in tqdm(range(config.max_iters)):
+        if iter % config.eval_interval == 0 or iter == config.max_iters - 1:
+            train_loss = evaluate_model(model, train_data, config)
+            val_loss = evaluate_model(model, val_data, config)
 
             print(f"step {iter}: train loss {train_loss:.4f}, val loss {val_loss:.4f}")
 
@@ -69,14 +62,12 @@ def training_loop(text, scheduler):
                 torch.save(model.state_dict(), gpt_model_path)
                 prev_val_loss = val_loss
 
-        xb, yb = get_batch(train_data, block_size, batch_size)
-        logits, loss = model(xb, yb)
-        del logits # delete logits since they arent used
+        xb, yb = get_batch(train_data, config)
+        _, loss = model(xb, yb)
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         # Clip gradients to prevent them from becoming too large
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
-        if(scheduler):
-            scheduler.step()
+        scheduler.step()

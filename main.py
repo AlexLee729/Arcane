@@ -1,27 +1,46 @@
 import torch
-from config import *
+import sys
 from model import GPT
 from train import training_loop
+import importlib.util
 
 MAX_NEW_TOKENS = 500
 TEMPERATURE = 1 
 
-def sample(prompt):
+gpt_model_path = 'Models/Arcane_small.pth'
+
+def load_config(config_file):
+    spec = importlib.util.spec_from_file_location("config", config_file)
+    config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config)
+    return config
+
+def sample(prompt, config, model_path):
     # Load the pre-trained GPT model
-    model = GPT().to(device)
-    model.load_state_dict(torch.load(gpt_model_path))
+    model = GPT(config).to(config.device)
+    model.load_state_dict(torch.load(model_path))
 
     # Generate text based on the prompt
     result = model.generate(prompt, max_new_tokens=MAX_NEW_TOKENS, temperature=TEMPERATURE)
     print(result)
 
 if __name__ == "__main__":
-    # Read the training text
-    file = f'Training Files/Val_text1.txt'
-    text = open(file, "r", encoding="utf-8").read()
+    if len(sys.argv) != 2:
+        print("Usage: python main.py <config_file>")
+        sys.exit(1)
 
-    # Train the GPT model
-    training_loop(text, scheduler=True)
+    # Load the configuration from the file
+    config_file = sys.argv[1]
+    config = load_config(config_file)
+
+    # Read the training text
+    file = 'Training Files/Val_text1.txt'
+    with open(file, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    # Run the training loop
+    training_loop(text, gpt_model_path, config)
 
     # Sample from the trained model
-    # sample(input("Enter your prompt: ")) 
+    prompt = input("Enter your prompt: ")
+    sample(prompt, config, gpt_model_path)
