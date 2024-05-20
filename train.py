@@ -30,13 +30,13 @@ def data_split(text):
 @torch.no_grad()
 def evaluate_model(model, data, config):
     model.eval()
-    losses = torch.zeros(config.eval_iters)
-    for k in range(config.eval_iters):
+    losses = []
+    for _ in range(config.eval_iters):
         X, Y = get_batch(data, config)
         _, loss = model(X, Y)
-        losses[k] = loss.item()
+        losses.append(loss.item())
     model.train()
-    return losses.mean()
+    return sum(losses) / len(losses)
 
 # Main training loop
 def training_loop(text, gpt_model_path, config):
@@ -44,13 +44,13 @@ def training_loop(text, gpt_model_path, config):
     load_pretrained_model(model, gpt_model_path)
     train_data, val_data = data_split(text)
     
-    prev_val_loss = evaluate_model(model, val_data, config)
-
+    best_val_loss = evaluate_model(model, val_data, config)
+    
     optimizer = torch.optim.AdamW(model.parameters(), config.learning_rate, weight_decay=1e-1)
-
-    warmup_steps = 2000
+    
+    warmup_steps = 200
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: min((step + 1) / warmup_steps, 1.0))
-
+    
     for iter in tqdm(range(config.max_iters)):
         if iter % config.eval_interval == 0 or iter == config.max_iters - 1:
             train_loss = evaluate_model(model, train_data, config)
@@ -58,16 +58,16 @@ def training_loop(text, gpt_model_path, config):
 
             print(f"step {iter}: train loss {train_loss:.4f}, val loss {val_loss:.4f}")
 
-            if val_loss < prev_val_loss:
+            if val_loss < best_val_loss:
                 torch.save(model.state_dict(), gpt_model_path)
-                prev_val_loss = val_loss
+                best_val_loss = val_loss
 
         xb, yb = get_batch(train_data, config)
         _, loss = model(xb, yb)
 
-        optimizer.zero_grad(set_to_none=True)
         loss.backward()
         # Clip gradients to prevent them from becoming too large
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         scheduler.step()
+        optimizer.zero_grad(set_to_none=True)

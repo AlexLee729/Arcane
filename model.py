@@ -9,21 +9,23 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-
-        head_size = config.n_embd // config.n_head
-        # Linear layers for key, query, and value projections for all heads
-        self.key = nn.Linear(config.n_embd, config.n_head * head_size, bias=config.bias)
-        self.query = nn.Linear(config.n_embd, config.n_head * head_size, bias=config.bias)
-        self.value = nn.Linear(config.n_embd, config.n_head * head_size, bias=config.bias)
+        self.num_heads = config.n_head
+        self.head_size = config.n_embd // config.n_head
+        
+        self.key = nn.Linear(config.n_embd, config.n_head * self.head_size, bias=config.bias)
+        self.query = nn.Linear(config.n_embd, config.n_head * self.head_size, bias=config.bias)
+        self.value = nn.Linear(config.n_embd, config.n_head * self.head_size, bias=config.bias)
+        
         # Output projection layer
-        self.c_proj = nn.Linear(config.n_head * head_size, config.n_embd)
+        self.c_proj = nn.Linear(config.n_head * self.head_size, config.n_embd)
+        
         # Dropout for regularization
         self.resid_dropout = nn.Dropout(config.dropout)
         self.attn_dropout = nn.Dropout(config.dropout)
+        
         # Check if flash attention is available (supported in PyTorch >= 2.0)
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        self.num_heads = config.n_head
-        self.head_size = head_size
+        self.flash = hasattr(F, 'scaled_dot_product_attention')
+        
 
     def forward(self, x):
         B, T, C = x.size() # Batch size, sequence length, embedding dimension
@@ -35,7 +37,7 @@ class MultiHeadAttention(nn.Module):
 
         if self.flash:
             # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.config.dropout, is_causal=True)
+            y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.config.dropout, is_causal=True)
         else:
             # Transpose to prepare for matrix multiplication
             k = k.transpose(1, 2)  # (B, num_heads, T, head_size)
@@ -80,13 +82,13 @@ class Block(nn.Module):
     
     def __init__(self, config):
         super().__init__()
-        self.sa = MultiHeadAttention(config)
+        self.attn = MultiHeadAttention(config)
         self.mlp = MLP(config)
         self.ln1 = nn.LayerNorm(config.n_embd, bias=config.bias)
         self.ln2 = nn.LayerNorm(config.n_embd, bias=config.bias)
 
     def forward(self, x):
-        x = x + self.sa(self.ln1(x))
+        x = x + self.attn(self.ln1(x))
         x = x + self.mlp(self.ln2(x))
         return x
     
@@ -144,33 +146,30 @@ class GPT(nn.Module):
         # Language model head
         logits = self.lm_head(x) # (B,T,vocab_size)
 
-        if targets is None:
-            loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, self.config.vocab_size), targets.view(-1))
+            return logits, loss
         else:
-            # Flatten the logits and targets for cross entropy loss
-            B, T, C = logits.shape
-            logits = logits.view(B*T, C)
-            targets = targets.view(B*T)
-            loss = F.cross_entropy(logits, targets)
-
-        return logits, loss
+            return logits, None
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0):
+    def generate(self, prompt, max_new_tokens, temperature=1, batch_size=10):
+        self.eval()
         enc = tiktoken.get_encoding("gpt2")
-        for _ in range(max_new_tokens):
-            # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-            # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
-            # pluck the logits at the final step and scale by desired temperature
-            logits = logits[:, -1, :] / temperature
-            # apply softmax to convert logits to (normalized) probabilities
-            probs = F.softmax(logits, dim=-1)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1)
-            # append sampled index to the running sequence and continue
-            idx = torch.cat((idx, idx_next), dim=1)
-            result = enc.decode(idx)
-
+        prompt_tokens = enc.encode(prompt)
+        idx = torch.tensor([prompt_tokens], dtype=torch.long, device=self.token_embedding_table.weight.device)
+        generated_tokens = []
+        while len(generated_tokens) < max_new_tokens:
+            batch_tokens = []
+            for _ in range(batch_size):
+                idx_cond = idx[:, -self.config.block_size:]  # Crop context to last block_size tokens
+                logits, _ = self(idx_cond)  # Get logits for next token
+                logits = logits[:, -1, :] / temperature
+                probs = F.softmax(logits, dim=-1)  # Calculate probabilities
+                idx_next = torch.multinomial(probs, num_samples=1)
+                batch_tokens.append(idx_next.item())
+            idx_next_batch = torch.tensor(batch_tokens, dtype=torch.long, device=idx.device).unsqueeze(0)
+            idx = torch.cat((idx, idx_next_batch), dim=1)
+            generated_tokens.extend(batch_tokens)
+        result = enc.decode(generated_tokens)
         return result
