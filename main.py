@@ -7,7 +7,7 @@ import importlib.util
 MAX_NEW_TOKENS = 500
 TEMPERATURE = 1 
 
-gpt_model_path = 'Models/Arcane_small.pth'
+gpt_model_path = 'Models/Arcane_smallv2.pth'
 
 def load_config():
     spec = importlib.util.spec_from_file_location("config", config_file)
