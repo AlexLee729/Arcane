@@ -35,7 +35,7 @@ if __name__ == "__main__":
     config = load_config()
 
     # # Training
-    file = f'Training Files/Val_text1.txt'
+    file = f'Training_Files/Val_text1.txt'
     with open(file, "r", encoding="utf-8") as f:
         text = f.read()
     training_loop(text, gpt_model_path, config)
