@@ -1,45 +1,19 @@
+from model import GPT, GPTConfig
 import torch
-import sys
-from model import GPT
-from train import training_loop
-import importlib.util
+from torch.nn import functional as F
+import os
 
-MAX_NEW_TOKENS = 500
-TEMPERATURE = 1 
+device = "cpu"
+if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    device = "mps"
 
-gpt_model_path = 'Models/Arcane_smallv2.pth'
+model = GPT(GPTConfig(vocab_size=50304))
+model.to(device)
 
-def load_config():
-    spec = importlib.util.spec_from_file_location("config", config_file)
-    config = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(config)
-    return config
+log_dir = "log"
+checkpoint_path = os.path.join(log_dir, "latest_checkpoint.pt")
+if os.path.exists(checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model'])
 
-def sample(prompt, config, model_path):
-    # Load the pre-trained GPT model
-    model = GPT(config).to(config.device)
-    model.load_state_dict(torch.load(model_path))
-
-    # # Generate text based on the prompt
-    # context = torch.zeros((1, 1), dtype=torch.long, device=config.device)
-    result = model.generate(prompt, max_new_tokens=MAX_NEW_TOKENS)
-    print(result)
-
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python main.py <config_file>")
-        sys.exit(1)
-
-    # Load the configuration from the file
-    config_file = sys.argv[1]
-    config = load_config()
-
-    # # Training
-    file = f'Training_Files/Val_text1.txt'
-    with open(file, "r", encoding="utf-8") as f:
-        text = f.read()
-    training_loop(text, gpt_model_path, config)
-
-    # Sample from the trained model
-    # prompt = input("Enter your prompt: ")
-    # sample(prompt, config, gpt_model_path)
+model.generate("Google,", max_length=100, num_return_sequences=1, device=device)
