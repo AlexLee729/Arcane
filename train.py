@@ -13,9 +13,12 @@ max_steps = 19073
 
 # autodetect the device
 device = "cpu"
-if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+if torch.cuda.is_available():
+    device = "cuda"
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
-    
+print(f"using device: {device}")
+
 device_type = "cuda" if device.startswith("cuda") else "cpu"
 
 enc = tiktoken.get_encoding('gpt2')
@@ -125,7 +128,8 @@ for step in range(start_step, max_steps):
     for micro_step in range(grad_accum_steps):
         x, y  = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
-        _, loss = model(x, y)
+        with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+            _, loss = model(x, y)
         loss = loss / grad_accum_steps
         loss_accum += loss.detach().float()
         loss.backward()
