@@ -24,8 +24,8 @@ enc = tiktoken.get_encoding('gpt2')
 
 # Batch parameters
 total_batch_size = 2**19  # ~0.5M, in number of tokens
-B = 2  # Micro batch size
-T = 2048  # Sequence length
+B = 4  # Micro batch size
+T = 1024  # Sequence length
 assert total_batch_size % (B * T) == 0, "Total batch size must be divisible by B * T"
 grad_accum_steps = total_batch_size // (B * T)
 print(f"Total desired batch size: {total_batch_size}")
@@ -37,8 +37,8 @@ val_loader = DataLoader(B=B, T=T, split="val")
 
 # Model setup
 torch.set_float32_matmul_precision('high')
-model = GPT(GPTConfig(vocab_size=50304, block_size=2048))
-model.to(device).to(torch.bfloat16)
+model = GPT(GPTConfig(vocab_size=50304))
+model.to(device)
 
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
@@ -58,11 +58,11 @@ optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4)
 # create the log directory we will write checkpoints to and log to
 log_dir = "log"
 os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, f"log2.txt")
+log_file = os.path.join(log_dir, f"log.txt")
 
 # Load the checkpoint if it exists
 start_step = 0
-checkpoint_path = os.path.join(log_dir, "arcane_latest_checkpoint.pt")
+checkpoint_path = os.path.join(log_dir, "latest_checkpoint.pt")
 append_mode = False
 if os.path.exists(checkpoint_path):
     checkpoint = torch.load("log/latest_checkpoint.pt", map_location=device)
@@ -91,7 +91,7 @@ for step in range(start_step, max_steps):
             val_loss_steps = 20
             for _ in range(val_loss_steps):
                 x, y = val_loader.next_batch()
-                x, y = x.to(device).to(torch.int32), y.to(device).to(torch.int32)
+                x, y = x.to(device), y.to(device)
                 _, loss = model(x, y)
                 loss = loss / val_loss_steps
                 val_loss_accum += loss.detach()
@@ -111,7 +111,7 @@ for step in range(start_step, max_steps):
             'current_shard': train_loader.current_shard,
             'current_position': train_loader.current_position
         }
-        torch.save(checkpoint, os.path.join(log_dir, "arcane_latest_checkpoint.pt"))
+        torch.save(checkpoint, os.path.join(log_dir, "latest_checkpoint.pt"))
         if step % 5000 == 0 or last_step:
             torch.save(checkpoint, os.path.join(log_dir, f"arcane_{step}.pt"))
                 
@@ -127,7 +127,7 @@ for step in range(start_step, max_steps):
     # gradient accumulation
     for micro_step in range(grad_accum_steps):
         x, y  = train_loader.next_batch()
-        x, y = x.to(device).to(torch.int32), y.to(device).to(torch.int32)
+        x, y = x.to(device), y.to(device)
         _, loss = model(x, y)
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()

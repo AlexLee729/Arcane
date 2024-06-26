@@ -10,15 +10,16 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, dtype=torch.bfloat16)
         # output projection
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, dtype=torch.bfloat16)
         self.c_proj.NANOGPT_SCALE_INIT = 1
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
 
     def forward(self, x):
+        x = x.to(dtype=torch.bfloat16)
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
@@ -38,12 +39,13 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd)
+        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, dtype=torch.bfloat16)
         self.gelu    = nn.GELU(approximate='tanh')
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, dtype=torch.bfloat16)
         self.c_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
+        x = x.to(dtype=torch.bfloat16)
         x = self.c_fc(x)
         x = self.gelu(x)
         x = self.c_proj(x)
@@ -83,7 +85,7 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False, dtype=torch.bfloat16)
         
         # weight sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
@@ -139,9 +141,9 @@ class GPT(nn.Module):
         print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
         print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
         # Create AdamW optimizer
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=True)
         return optimizer
-    
+               
     def generate(self, prompt, max_length=32, num_return_sequences=1, top_k=50, device='cpu'):
         self.eval()
         enc = tiktoken.get_encoding('gpt2')
