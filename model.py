@@ -18,10 +18,18 @@ class CausalSelfAttention(nn.Module):
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
-        
         self.head_dim = config.n_embd // config.n_head
+        #kv-cache for inference
+        self.register_buffer("cache_k", None)
+        self.register_buffer("cache_v", None)
+        self.cache_key_padding_mask = None
 
-    def forward(self, x):
+    def clear_cache(self):
+        self.cache_k = None
+        self.cache_v = None
+        self.cache_key_padding_mask = None
+        
+    def forward(self, x, use_cache=False):
         x = x.to(dtype=torch.bfloat16)
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -32,6 +40,14 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+        
+        if use_cache and self.cache_k is not None:
+            k = torch.cat((self.cache_k, k), dim=2)
+            v = torch.cat((self.cache_v, v), dim=2)
+        if use_cache:
+            self.cache_k = k
+            self.cache_v = v
+            
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
         # output projection
@@ -63,8 +79,8 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x, use_cache=False):
+        x = x + self.attn(self.ln_1(x), use_cache=use_cache)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -107,7 +123,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, use_cache=False):
         # idx is of shape (B, T)
         _, T = idx.size()
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
@@ -118,7 +134,7 @@ class GPT(nn.Module):
         x = tok_emb + pos_emb
         # forward the blocks of the transformer
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, use_cache=use_cache)
         # forward the final layernorm and the classifier
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
@@ -157,9 +173,12 @@ class GPT(nn.Module):
         print(prompt, end="", flush=True)
         xgen = tokens
         with torch.no_grad():
+            for block in self.transformer.h:
+                block.attn.clear_cache()  # Clear the cache before generating
+
             while xgen.size(1) < max_length:
                 # forward the model to get the logits
-                logits, _ = self(xgen)  # (B, T, vocab_size)
+                logits, _ = self(xgen, use_cache=True)  # (B, T, vocab_size)
                 # take the logits at the last position
                 logits = logits[:, -1, :]  # (B, vocab_size)
                 # get the probabilities
