@@ -54,7 +54,6 @@ def get_lr(it):
     return min_lr + coeff * (max_lr - min_lr)
 
 optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4)
-
 # create the log directory we will write checkpoints to and log to
 log_dir = "log"
 os.makedirs(log_dir, exist_ok=True)

@@ -141,7 +141,7 @@ class GPT(nn.Module):
         print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
         print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
         # Create AdamW optimizer
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=True)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8)
         return optimizer
                
     def generate(self, prompt, max_length=32, num_return_sequences=1, top_k=50, device='cpu'):
@@ -173,4 +173,4 @@ class GPT(nn.Module):
         for i in range(num_return_sequences):
             tokens = xgen[i, :max_length].tolist()
             decoded = enc.decode(tokens)
-            print(decoded)
+            print(f"{decoded}\n")
