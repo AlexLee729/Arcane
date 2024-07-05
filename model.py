@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
+import time
 
 class CausalSelfAttention(nn.Module):
 
@@ -17,6 +18,8 @@ class CausalSelfAttention(nn.Module):
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
+        
+        self.head_dim = config.n_embd // config.n_head
 
     def forward(self, x):
         x = x.to(dtype=torch.bfloat16)
@@ -26,9 +29,9 @@ class CausalSelfAttention(nn.Module):
         # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
         # output projection
@@ -143,34 +146,39 @@ class GPT(nn.Module):
         # Create AdamW optimizer
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8)
         return optimizer
-               
+    
     def generate(self, prompt, max_length=32, num_return_sequences=1, top_k=50, device='cpu'):
         self.eval()
         enc = tiktoken.get_encoding('gpt2')
         tokens = enc.encode(prompt)
-        tokens = torch.tensor(tokens, dtype=torch.long)
+        tokens = torch.tensor(tokens, dtype=torch.long, device=device)
         tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-        xgen = tokens.to(device)
         
-        while xgen.size(1) < max_length:
-            # forward the model to get the logits
-            with torch.no_grad():
-                logits, _ = self(xgen) # (B, T, vocab_size)
+        print(prompt, end="", flush=True)
+        xgen = tokens
+        with torch.no_grad():
+            while xgen.size(1) < max_length:
+                # forward the model to get the logits
+                logits, _ = self(xgen)  # (B, T, vocab_size)
                 # take the logits at the last position
-                logits = logits[:, -1, :] # (B, vocab_size)
+                logits = logits[:, -1, :]  # (B, vocab_size)
                 # get the probabilities
                 probs = F.softmax(logits, dim=-1)
                 # do top-k sampling of 50 (huggingface pipeline default)
                 topk_probs, topk_indices = torch.topk(probs, top_k, dim=-1)
                 # select a token from the top-k probabilities
-                ix = torch.multinomial(topk_probs, 1) # (B, 1)
+                ix = torch.multinomial(topk_probs, 1)  # (B, 1)
                 # gather the corresponding indices
-                xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
+                xcol = torch.gather(topk_indices, -1, ix)  # (B, 1)
                 # append to the sequence
                 xgen = torch.cat((xgen, xcol), dim=1)
-        
-        # print the generated text
-        for i in range(num_return_sequences):
-            tokens = xgen[i, :max_length].tolist()
-            decoded = enc.decode(tokens)
-            print(f"{decoded}\n")
+                
+                # Decode and print the last generated word
+                last_token = xgen[0, -1].item()
+                last_word = enc.decode([last_token])
+                print(last_word, end="", flush=True)
+                
+                # Check if generated length exceeds 70% of max_length
+                if xgen.size(1) > 0.7 * max_length and (last_word.endswith('.') or last_word.endswith('!') or last_word.endswith('?')):
+                    break
+        print()
