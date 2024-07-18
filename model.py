@@ -4,6 +4,14 @@ import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
 
+class LayerScale(nn.Module):
+    def __init__(self, dim, init_value=1e-5):
+        super().__init__()
+        self.gamma = nn.Parameter(init_value * torch.ones(dim))
+
+    def forward(self, x):
+        return x * self.gamma
+    
 class MultiQueryCausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -66,6 +74,7 @@ class MLP(nn.Module):
         self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, dtype=torch.bfloat16)
         self.gelu    = nn.GELU()
         self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, dtype=torch.bfloat16)
+        self.layer_scale = LayerScale(config.n_embd)
         self.c_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
@@ -73,7 +82,7 @@ class MLP(nn.Module):
         x = self.c_fc(x)
         x = self.gelu(x)
         x = self.c_proj(x)
-        return x
+        return self.layer_scale(x)
 
 class Block(nn.Module):
 
