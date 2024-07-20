@@ -5,8 +5,9 @@ This document provides a concise explanation of the LLM model code, breaking dow
 
 ## 1. CasualSelfAttention Class
 ### Initalization
-```def __init__(self, config):
-        super().__init__()
+```python
+def __init__(self, config):
+	super().__init__()
         assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, dtype=torch.bfloat16)
