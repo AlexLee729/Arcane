@@ -49,3 +49,44 @@ def apply_rotary_pos_emb(self, q, k, cos, sin):
         return q_cos + q_sin, k_cos + k_sin
 ```
 - **Purpose**: Applies rotary positional embeddings (`cos` and `sin`) to queries (`q`) and keys (`k`) for enhancing model performance.
+## Forward
+```python
+def forward(self, x, use_cache=False):
+        x = x.to(dtype=torch.bfloat16)
+        B, T, C = x.size() 
+        
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+        
+        # Apply RoPE
+        seq_len = k.shape[-2]
+        t = torch.arange(seq_len, device=k.device, dtype=self.inv_freq.dtype)
+        freqs = torch.einsum("i , j -> i j", t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos, sin = emb.cos(), emb.sin()
+
+        q, k = self.apply_rotary_pos_emb(q, k, cos, sin)
+        q, k, v = q.to(dtype=torch.bfloat16), k.to(dtype=torch.bfloat16), v.to(dtype=torch.bfloat16)
+        
+        if use_cache and self.cache_k is not None:
+            k = torch.cat((self.cache_k, k), dim=2)
+            v = torch.cat((self.cache_v, v), dim=2)
+        if use_cache:
+            self.cache_k = k
+            self.cache_v = v
+            
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+        # output projection
+        y = self.c_proj(y)
+        return y
+```
+- **Input Transformation**: Converts input `x` to `torch.bfloat16` and retrieves batch size (`B`), sequence length (`T`), and embedding size (`C`).
+- **Multi-head Attention**: Projects input through `self.c_attn` to obtain `q`, `k`, and `v` tensors, reshaping them for multi-head attention calculations.
+- **RoPE Application**: Applies rotary position embeddings (`cos` and `sin`) to enhance attention mechanism.
+- **Caching**: Optionally caches key (`cache_k`) and value (`cache_v`) tensors for efficient inference
+- **Attention Computation**: Uses scaled dot product attention (`F.scaled_dot_product_attention`) with casual masking (`is_casual=True`) to compute `y`. *Requires PyTorch >= 2.0*
+- **Output Projection**: Projects the concatenated attention outputs back to the original embedding size usinf `self.c_proj`.
