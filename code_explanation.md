@@ -31,8 +31,8 @@ def __init__(self, config):
         self.register_buffer("inv_freq", inv_freq)
 ```
 #### Explanation:
-- **Multi-head Attention**: `self.c_attn` projects input embeddings into keu, query, and balue tensors for multi-head attention
-- **Output Projection**: `self.c_proj` transforms the concatenated multi-heda attention outputs back to the original embedding size
+- **Multi-head Attention**: `self.c_attn` projects input embeddings into key, query, and value tensors for multi-head attention
+- **Output Projection**: `self.c_proj` transforms the concatenated multi-head attention outputs back to the original embedding size
 ### Rotate half
 ```python
 def rotate_half(self, x):
