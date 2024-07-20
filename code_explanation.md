@@ -37,5 +37,6 @@ def __init__(self, config):
 ```python
 def rotate_half(self, x):
         x1, x2 = x[..., ::2], x[..., 1::2]
-        return torch.cat((-x2, x1), dim=-1)```
+        return torch.cat((-x2, x1), dim=-1)
+```
 - **Purpose**: Performs rotation on input tensor `x` for positional encoding
