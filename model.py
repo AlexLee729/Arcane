@@ -3,57 +3,64 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
-
-class LayerScale(nn.Module):
-    def __init__(self, dim, init_value=1e-5):
-        super().__init__()
-        self.gamma = nn.Parameter(init_value * torch.ones(dim))
-
-    def forward(self, x):
-        return x * self.gamma
     
-class MultiQueryCausalSelfAttention(nn.Module):
+class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
+        # key, query, value projections for all heads, but in a batch
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, dtype=torch.bfloat16)
+        # output projection
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd, dtype=torch.bfloat16)
+        self.c_proj.NANOGPT_SCALE_INIT = 1
         
-        # Number of heads and dimensions per head
+        # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.head_dim = config.n_embd // config.n_head
         
-        # Query projections
-        self.c_attn_q = nn.Linear(config.n_embd, config.n_embd, dtype=torch.bfloat16)
-        # Shared key and value projections
-        self.c_attn_kv = nn.Linear(config.n_embd, 2 * config.n_embd // config.n_head, dtype=torch.bfloat16)
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, dtype=torch.bfloat16)
-        self.c_proj.NANOGPT_SCALE_INIT = 1
-        
-        # kv-cache for inference
+        #kv-cache for inference
         self.register_buffer("cache_k", None)
         self.register_buffer("cache_v", None)
+        
+        # Initialize the RoPE parameters
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim))
+        self.register_buffer("inv_freq", inv_freq)
 
     def clear_cache(self):
         self.cache_k = None
         self.cache_v = None
-        
+    
+    def rotate_half(self, x):
+        x1, x2 = x[..., ::2], x[..., 1::2]
+        return torch.cat((-x2, x1), dim=-1)
+    
+    def apply_rotary_pos_emb(self, q, k, cos, sin):
+        q_cos = q * cos - self.rotate_half(q) * sin
+        q_sin = q * sin + self.rotate_half(q) * cos
+        k_cos = k * cos - self.rotate_half(k) * sin
+        k_sin = k * sin + self.rotate_half(k) * cos
+        return q_cos + q_sin, k_cos + k_sin
+    
     def forward(self, x, use_cache=False):
         x = x.to(dtype=torch.bfloat16)
-        B, T, C = x.size() # Batch size, sequence length, embedding dimensionality
+        B, T, C = x.size() 
         
-        # Calculate query, key, values
-        q = self.c_attn_q(x)  # Queries
-        kv = self.c_attn_kv(x)  # Keys and values
-        
-        # Split keys and values
-        k, v = kv.split(self.head_dim, dim=2)
-        
-        # Reshape queries
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
+        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
         
-        # Reshape keys and values (single shared key-value pair per head)
-        k = k.view(B, 1, T, self.head_dim).repeat(1, self.n_head, 1, 1) # (B, nh, T, hs)
-        v = v.view(B, 1, T, self.head_dim).repeat(1, self.n_head, 1, 1) # (B, nh, T, hs)
+        # Apply RoPE
+        seq_len = k.shape[-2]
+        t = torch.arange(seq_len, device=k.device, dtype=self.inv_freq.dtype)
+        freqs = torch.einsum("i , j -> i j", t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos, sin = emb.cos(), emb.sin()
+
+        q, k = self.apply_rotary_pos_emb(q, k, cos, sin)
+        q, k, v = q.to(dtype=torch.bfloat16), k.to(dtype=torch.bfloat16), v.to(dtype=torch.bfloat16)
         
         if use_cache and self.cache_k is not None:
             k = torch.cat((self.cache_k, k), dim=2)
@@ -64,7 +71,8 @@ class MultiQueryCausalSelfAttention(nn.Module):
             
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-        y = self.c_proj(y) # output projection
+        # output projection
+        y = self.c_proj(y)
         return y
     
 class MLP(nn.Module):
@@ -74,7 +82,6 @@ class MLP(nn.Module):
         self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, dtype=torch.bfloat16)
         self.gelu    = nn.GELU()
         self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, dtype=torch.bfloat16)
-        self.layer_scale = LayerScale(config.n_embd)
         self.c_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
@@ -82,14 +89,14 @@ class MLP(nn.Module):
         x = self.c_fc(x)
         x = self.gelu(x)
         x = self.c_proj(x)
-        return self.layer_scale(x)
+        return x
 
 class Block(nn.Module):
 
     def __init__(self, config):
         super().__init__()
         self.ln_1 = nn.LayerNorm(config.n_embd)
-        self.attn = MultiQueryCausalSelfAttention(config)
+        self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
