@@ -30,7 +30,6 @@ def __init__(self, config):
         inv_freq = 1.0 / (10000 ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim))
         self.register_buffer("inv_freq", inv_freq)
 ```
-#### Explanation:
 - **Multi-head Attention**: `self.c_attn` projects input embeddings into key, query, and value tensors for multi-head attention
 - **Output Projection**: `self.c_proj` transforms the concatenated multi-head attention outputs back to the original embedding size
 ### Rotate half
@@ -40,3 +39,13 @@ def rotate_half(self, x):
         return torch.cat((-x2, x1), dim=-1)
 ```
 - **Purpose**: Performs rotation on input tensor `x` for positional encoding
+### Rotary Positional Embedding
+```python
+def apply_rotary_pos_emb(self, q, k, cos, sin):
+        q_cos = q * cos - self.rotate_half(q) * sin
+        q_sin = q * sin + self.rotate_half(q) * cos
+        k_cos = k * cos - self.rotate_half(k) * sin
+        k_sin = k * sin + self.rotate_half(k) * cos
+        return q_cos + q_sin, k_cos + k_sin
+```
+- **Purpose**: Applies rotary positional embeddings (`cos` and `sin`) to queries (`q`) and keys (`k`) for enhancing model performance.
