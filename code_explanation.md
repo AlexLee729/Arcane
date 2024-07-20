@@ -49,7 +49,7 @@ def apply_rotary_pos_emb(self, q, k, cos, sin):
         return q_cos + q_sin, k_cos + k_sin
 ```
 - **Purpose**: Applies rotary positional embeddings (`cos` and `sin`) to queries (`q`) and keys (`k`) for enhancing model performance.
-## Forward
+### Forward
 ```python
 def forward(self, x, use_cache=False):
         x = x.to(dtype=torch.bfloat16)
