@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
-    
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -33,9 +33,14 @@ class CausalSelfAttention(nn.Module):
     
     def rotate_half(self, x):
         x1, x2 = x[..., ::2], x[..., 1::2]
-        return torch.cat((-x2, x1), dim=-1)
+        return torch.cat((-x2, x1), dim=-1).to(dtype=torch.bfloat16)
     
     def apply_rotary_pos_emb(self, q, k, cos, sin):
+        q = q.to(torch.bfloat16)
+        k = k.to(torch.bfloat16)
+        cos = cos.to(torch.bfloat16)
+        sin = sin.to(torch.bfloat16)
+        
         q_cos = q * cos - self.rotate_half(q) * sin
         q_sin = q * sin + self.rotate_half(q) * cos
         k_cos = k * cos - self.rotate_half(k) * sin
@@ -52,7 +57,7 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
         
-        # Apply RoPE
+        # # Apply RoPE
         seq_len = k.shape[-2]
         t = torch.arange(seq_len, device=k.device, dtype=self.inv_freq.dtype)
         freqs = torch.einsum("i , j -> i j", t, self.inv_freq)

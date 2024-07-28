@@ -6,6 +6,7 @@ from dataloader import DataLoader
 import torch
 from model import GPT, GPTConfig
 
+# Learning rate schedule parameters
 max_lr = 6e-4 * 3
 min_lr = max_lr * 0.1
 warmup_steps = 715
@@ -40,6 +41,7 @@ torch.set_float32_matmul_precision('high')
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
 
+# Learning rate scheduler
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
     if it < warmup_steps:
@@ -53,35 +55,38 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
     return min_lr + coeff * (max_lr - min_lr)
 
-optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4)
-# create the log directory we will write checkpoints to and log to
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4 * 3)
+
+# Create Log Directory
 log_dir = "log"
 os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, f"log.txt")
+log_file = os.path.join(log_dir, f"log2.txt")
 
 # Load the checkpoint if it exists
 start_step = 0
-checkpoint_path = os.path.join(log_dir, "latest_checkpoint.pt")
+checkpoint_path = os.path.join(log_dir, "latest_checkpoint2.pt")
 append_mode = False
 if os.path.exists(checkpoint_path):
-    checkpoint = torch.load("log/latest_checkpoint.pt", map_location=device)
+    checkpoint = torch.load("log/latest_checkpoint2.pt", map_location=device)
     model.load_state_dict(checkpoint['model'])
     optimizer.load_state_dict(checkpoint['optimizer'])
-    start_step = checkpoint['step'] + 1
+    start_step = checkpoint['step']
     train_loader.current_shard = checkpoint['current_shard']
     train_loader.current_position = checkpoint['current_position']
     print(f"Resuming training from step {start_step}, shard: {checkpoint['current_shard']}")
     append_mode = True
 
+# Logging setup
 with open(log_file, "a" if append_mode else "w") as f:
     if not append_mode:
         pass
-    
+
+# Training loop
 for step in range(start_step, max_steps):
     t0 = time.time()
     last_step = (step == max_steps - 1)
     
-    # once in a while evaluate our validation loss
+    # Validation
     if step % 250 == 0 or last_step:
         model.eval()
         val_loader.reset()
@@ -93,14 +98,14 @@ for step in range(start_step, max_steps):
                 x, y = x.to(device), y.to(device)
                 _, loss = model(x, y)
                 loss = loss / val_loss_steps
-                val_loss_accum += loss.detach()
+                val_loss_accum += loss
         print(f"validation loss: {val_loss_accum.item():.4f}")
         with open(log_file, "a") as f:
             f.write(f"step: {step} | val: {val_loss_accum.item():.4f}\n")
-            
+                
+    # Checkpointing
     if step > 0 and (step % 250 == 0 or last_step):
         # optionally write model checkpoints
-        checkpoint_path = os.path.join(log_dir, f"model_{step:05d}.pt")
         checkpoint = {
             'model': model.state_dict(),
             'config': model.config,
@@ -110,30 +115,26 @@ for step in range(start_step, max_steps):
             'current_shard': train_loader.current_shard,
             'current_position': train_loader.current_position
         }
-        torch.save(checkpoint, os.path.join(log_dir, "latest_checkpoint.pt"))
+        torch.save(checkpoint, os.path.join(log_dir, "latest_checkpoint2.pt"))
         if step % 5000 == 0 or last_step:
-            torch.save(checkpoint, os.path.join(log_dir, f"arcane_{step}.pt"))
-                
-    # once in a while generate from the model (except step 0, which is noise)
-    # if step > 0 and step % 250 == 0:
-    #     samples = model.generate("Hello, I'm a language model,", max_length=32, num_return_sequences=4, device=device)
+            torch.save({'model': model.state_dict()}, os.path.join(log_dir, f"arcane2_{step}.pt"))
             
-    #training loop
+    # Training
     model.train()
     optimizer.zero_grad(set_to_none=True)
     loss_accum = 0.0
     
-    # gradient accumulation
+    # Gradient accumulation
     for micro_step in range(grad_accum_steps):
         x, y  = train_loader.next_batch()
         x, y = x.to(device), y.to(device)
         _, loss = model(x, y)
         loss = loss / grad_accum_steps
-        loss_accum += loss.detach()
+        loss_accum += loss
         loss.backward()
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     
-    # determine and set learning rate for this iteration
+    # Set learning rate
     lr = get_lr(step)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
