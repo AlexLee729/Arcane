@@ -26,6 +26,14 @@ class CausalSelfAttention(nn.Module):
         # Initialize the RoPE parameters
         inv_freq = 1.0 / (10000 ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim))
         self.register_buffer("inv_freq", inv_freq)
+        
+        # Precompute RoPE embeddings up to max length (e.g., 2048)
+        max_seq_len = 1024  # or any reasonable max length
+        t = torch.arange(max_seq_len, dtype=torch.float32, device=inv_freq.device)
+        freqs = torch.einsum('i,j->ij', t, inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)  # For both sin and cos components
+        self.register_buffer("cos_cached", emb.cos()[None, None, :, :], persistent=False)
+        self.register_buffer("sin_cached", emb.sin()[None, None, :, :], persistent=False)
 
     def clear_cache(self):
         self.cache_k = None
@@ -36,16 +44,10 @@ class CausalSelfAttention(nn.Module):
         return torch.cat((-x2, x1), dim=-1).to(dtype=torch.bfloat16)
     
     def apply_rotary_pos_emb(self, q, k, cos, sin):
-        q = q.to(torch.bfloat16)
-        k = k.to(torch.bfloat16)
-        cos = cos.to(torch.bfloat16)
-        sin = sin.to(torch.bfloat16)
-        
-        q_cos = q * cos - self.rotate_half(q) * sin
-        q_sin = q * sin + self.rotate_half(q) * cos
-        k_cos = k * cos - self.rotate_half(k) * sin
-        k_sin = k * sin + self.rotate_half(k) * cos
-        return q_cos + q_sin, k_cos + k_sin
+        # Vectorized rotary embedding application
+        q_rot = q * cos + self.rotate_half(q) * sin
+        k_rot = k * cos + self.rotate_half(k) * sin
+        return q_rot, k_rot
     
     def forward(self, x, use_cache=False):
         x = x.to(dtype=torch.bfloat16)
@@ -53,20 +55,16 @@ class CausalSelfAttention(nn.Module):
         
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2) # (B, nh, T, hs)
+        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, nh, T, hs)
         
-        # # Apply RoPE
+        # Apply RoPE using cached embeddings
         seq_len = k.shape[-2]
-        t = torch.arange(seq_len, device=k.device, dtype=self.inv_freq.dtype)
-        freqs = torch.einsum("i , j -> i j", t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos, sin = emb.cos(), emb.sin()
-
+        cos = self.cos_cached[:, :, :seq_len, :].to(dtype=torch.bfloat16)
+        sin = self.sin_cached[:, :, :seq_len, :].to(dtype=torch.bfloat16)
         q, k = self.apply_rotary_pos_emb(q, k, cos, sin)
-        q, k, v = q.to(dtype=torch.bfloat16), k.to(dtype=torch.bfloat16), v.to(dtype=torch.bfloat16)
-        
+
         if use_cache and self.cache_k is not None:
             k = torch.cat((self.cache_k, k), dim=2)
             v = torch.cat((self.cache_v, v), dim=2)
@@ -74,9 +72,9 @@ class CausalSelfAttention(nn.Module):
             self.cache_k = k
             self.cache_v = v
             
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-        # output projection
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # Flash attention
+        y = y.transpose(1, 2).contiguous().view(B, T, C)  # Re-assemble all head outputs side by side
+        # Output projection
         y = self.c_proj(y)
         return y
     
@@ -100,14 +98,14 @@ class Block(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd)
+        self.rms_1 = nn.RMSNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd)
+        self.rms_2 = nn.RMSNorm(config.n_embd)
         self.mlp = MLP(config)
 
     def forward(self, x, use_cache=False):
-        x = x + self.attn(self.ln_1(x), use_cache=use_cache)
-        x = x + self.mlp(self.ln_2(x))
+        x = x + self.attn(self.rms_1(x), use_cache=use_cache)
+        x = x + self.mlp(self.rms_2(x))
         return x
 
 @dataclass
@@ -127,7 +125,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd), # Token embedding
             wpe = nn.Embedding(config.block_size, config.n_embd), # Position embedding
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]), # Transformer blocks
-            ln_f = nn.LayerNorm(config.n_embd), # Final layer norm
+            rms_f = nn.RMSNorm(config.n_embd), # Final layer norm
         ))
         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False, dtype=torch.bfloat16)
@@ -164,7 +162,7 @@ class GPT(nn.Module):
             x = block(x, use_cache=use_cache)
             
         # Forward the final layernorm and the classifier
-        x = self.transformer.ln_f(x)
+        x = self.transformer.rms_f(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
         
         loss = None
