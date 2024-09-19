@@ -4,65 +4,101 @@ import torch.nn as nn
 from torch.nn import functional as F
 import tiktoken
 
-class CausalSelfAttention(nn.Module):
-    def __init__(self, config):
+class LoRALayer(nn.Module):
+    def __init__(self, in_features, out_features, r=8, alpha=1.0):
         super().__init__()
-        assert config.n_embd % config.n_head == 0
-        # key, query, value projections for all heads, but in a batch
+        self.r = r  # Rank of the low-rank matrices
+        self.alpha = alpha  # Scaling factor
+        
+        # Initialize low-rank matrices A and B
+        self.lora_A = nn.Parameter(torch.randn(in_features, r) * (alpha / r))
+        self.lora_B = nn.Parameter(torch.randn(r, out_features) * (alpha / r))
+        
+        # Scaling factor to be applied after projection
+        self.scaling = self.alpha / self.r
+        
+    def forward(self, x):
+        # Apply LoRA: Multiply x by the low-rank matrices and scale the output
+        return torch.matmul(x, self.lora_A).matmul(self.lora_B) * self.scaling
+
+class CausalSelfAttention(nn.Module):
+    def __init__(self, config, use_lora=False, lora_r=8, lora_alpha=1.0):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0  # Ensure that embedding dimension is divisible by the number of heads
+        self.use_lora = use_lora
+        
+        # Linear layers for Q, K, V projections, and output projection
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, dtype=torch.bfloat16)
-        # output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, dtype=torch.bfloat16)
-        self.c_proj.NANOGPT_SCALE_INIT = 1
-        
-        # regularization
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
-        self.head_dim = config.n_embd // config.n_head
-        
-        #kv-cache for inference
+
+        if self.use_lora:
+            self.lora_q = LoRALayer(config.n_embd, config.n_embd, r=lora_r, alpha=lora_alpha)
+            self.lora_k = LoRALayer(config.n_embd, config.n_embd, r=lora_r, alpha=lora_alpha)
+
+        # Attention parameters
+        self.n_head = config.n_head  # Number of attention heads
+        self.n_embd = config.n_embd  # Embedding dimension
+        self.head_dim = config.n_embd // config.n_head  # Dimension per head
+
+        # Cache for key and value tensors for inference
         self.register_buffer("cache_k", None)
         self.register_buffer("cache_v", None)
-        
-        # Initialize the RoPE parameters
+
+        # Rotary positional embedding (RoPE) frequency matrix
         inv_freq = 1.0 / (10000 ** (torch.arange(0, self.head_dim, 2, dtype=torch.float32) / self.head_dim))
         self.register_buffer("inv_freq", inv_freq)
-        
-        # Precompute RoPE embeddings up to max length (e.g., 2048)
-        max_seq_len = 1024  # or any reasonable max length
-        t = torch.arange(max_seq_len, dtype=torch.float32, device=inv_freq.device)
-        freqs = torch.einsum('i,j->ij', t, inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)  # For both sin and cos components
-        self.register_buffer("cos_cached", emb.cos()[None, None, :, :], persistent=False)
-        self.register_buffer("sin_cached", emb.sin()[None, None, :, :], persistent=False)
 
+        # RoPE cache (precomputed embeddings for longer sequences)
+        self.cached_seq_len = None
+        self.cached_cos_sin = None
+    
     def clear_cache(self):
         self.cache_k = None
         self.cache_v = None
     
     def rotate_half(self, x):
-        x1, x2 = x[..., ::2], x[..., 1::2]
-        return torch.cat((-x2, x1), dim=-1).to(dtype=torch.bfloat16)
+        x1, x2 = x[..., ::2], x[..., 1::2]  # Split even and odd dimensions
+        return torch.cat((-x2, x1), dim=-1)  # Rotate halves and concatenate
     
     def apply_rotary_pos_emb(self, q, k, cos, sin):
-        # Vectorized rotary embedding application
-        q_rot = q * cos + self.rotate_half(q) * sin
-        k_rot = k * cos + self.rotate_half(k) * sin
+        q_rot = q * cos + self.rotate_half(q) * sin  # Apply RoPE to query
+        k_rot = k * cos + self.rotate_half(k) * sin  # Apply RoPE to key
         return q_rot, k_rot
+
+    def compute_rope(self, seq_len, device):
+        """Computes RoPE dynamically, or retrieves from cache."""
+        if self.cached_seq_len == seq_len and self.cached_cos_sin is not None:
+            return self.cached_cos_sin
+
+        t = torch.arange(seq_len, dtype=torch.float32, device=device)
+        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos = emb.cos().unsqueeze(0).unsqueeze(0).to(dtype=torch.bfloat16)
+        sin = emb.sin().unsqueeze(0).unsqueeze(0).to(dtype=torch.bfloat16)
+
+        self.cached_seq_len = seq_len
+        self.cached_cos_sin = (cos, sin)
+        return cos, sin
     
     def forward(self, x, use_cache=False):
-        x = x.to(dtype=torch.bfloat16)
-        B, T, C = x.size() 
-        
-        qkv = self.c_attn(x)
+        """Forward pass of the CausalSelfAttention module."""
+        B, T, C = x.size()  # Batch size, sequence length, embedding size
+
+        # Get QKV projections from the input
+        qkv = self.c_attn(x.to(dtype=torch.bfloat16))
         q, k, v = qkv.split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, nh, T, hs)
-        
-        # Apply RoPE using cached embeddings
-        seq_len = k.shape[-2]
-        cos = self.cos_cached[:, :, :seq_len, :].to(dtype=torch.bfloat16)
-        sin = self.sin_cached[:, :, :seq_len, :].to(dtype=torch.bfloat16)
+
+        if self.use_lora:
+            q = q + self.lora_q(q)  # LoRA applied to query
+            k = k + self.lora_k(k)  # LoRA applied to key
+
+        # Reshape for multi-head attention
+        q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+
+        # Compute rotary positional embeddings (RoPE)
+        cos, sin = self.compute_rope(seq_len=T, device=x.device)
         q, k = self.apply_rotary_pos_emb(q, k, cos, sin)
 
         if use_cache and self.cache_k is not None:
@@ -71,10 +107,10 @@ class CausalSelfAttention(nn.Module):
         if use_cache:
             self.cache_k = k
             self.cache_v = v
-            
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # Flash attention
-        y = y.transpose(1, 2).contiguous().view(B, T, C)  # Re-assemble all head outputs side by side
-        # Output projection
+
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+
         y = self.c_proj(y)
         return y
     
@@ -96,11 +132,11 @@ class MLP(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, use_lora=False, lora_r=8, lora_alpha=1.0):
         super().__init__()
-        self.rms_1 = nn.RMSNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config)
-        self.rms_2 = nn.RMSNorm(config.n_embd)
+        self.rms_1 = nn.LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttention(config, use_lora=use_lora, lora_r=lora_r, lora_alpha=lora_alpha)
+        self.rms_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
     def forward(self, x, use_cache=False):
@@ -117,15 +153,15 @@ class GPTConfig:
     n_embd: int = 768
 
 class GPT(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, use_lora=False, lora_r=8, lora_alpha=1.0):
         super().__init__()
         self.config = config
         
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd), # Token embedding
             wpe = nn.Embedding(config.block_size, config.n_embd), # Position embedding
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]), # Transformer blocks
-            rms_f = nn.RMSNorm(config.n_embd), # Final layer norm
+            h = nn.ModuleList([Block(config, use_lora=use_lora, lora_r=lora_r, lora_alpha=lora_alpha) for _ in range(config.n_layer)]), # Transformer blocks
+            rms_f = nn.LayerNorm(config.n_embd), # Final layer norm
         ))
         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False, dtype=torch.bfloat16)
