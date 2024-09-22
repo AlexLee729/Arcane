@@ -134,14 +134,14 @@ class Block(nn.Module):
 
     def __init__(self, config, use_lora=False, lora_r=8, lora_alpha=1.0):
         super().__init__()
-        self.rms_1 = nn.LayerNorm(config.n_embd)
+        self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config, use_lora=use_lora, lora_r=lora_r, lora_alpha=lora_alpha)
-        self.rms_2 = nn.LayerNorm(config.n_embd)
+        self.ln_2 = nn.LayerNorm(config.n_embd)
         self.mlp = MLP(config)
 
     def forward(self, x, use_cache=False):
-        x = x + self.attn(self.rms_1(x), use_cache=use_cache)
-        x = x + self.mlp(self.rms_2(x))
+        x = x + self.attn(self.ln_1(x), use_cache=use_cache)
+        x = x + self.mlp(self.ln_2(x))
         return x
 
 @dataclass
@@ -161,7 +161,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd), # Token embedding
             wpe = nn.Embedding(config.block_size, config.n_embd), # Position embedding
             h = nn.ModuleList([Block(config, use_lora=use_lora, lora_r=lora_r, lora_alpha=lora_alpha) for _ in range(config.n_layer)]), # Transformer blocks
-            rms_f = nn.LayerNorm(config.n_embd), # Final layer norm
+            ln_f = nn.LayerNorm(config.n_embd), # Final layer norm
         ))
         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False, dtype=torch.bfloat16)
@@ -198,7 +198,7 @@ class GPT(nn.Module):
             x = block(x, use_cache=use_cache)
             
         # Forward the final layernorm and the classifier
-        x = self.transformer.rms_f(x)
+        x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # (B, T, vocab_size)
         
         loss = None
