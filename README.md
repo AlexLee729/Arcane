@@ -12,7 +12,7 @@ This repository contains **Arcane**, a small, educational GPT-like transformer m
 - [Overview](#overview)
 - [Model Architecture](#model-architecture)
 - [Requirements](#requirements)
-- [Evaluation](#evaluation)
+- [Model Comparison](#model-comparison)
 
 ## Overview
 Arcane is based on the GPT-2 architecture and is built to help users learn how transformer models work by experimenting with a simplified model. The project includes support for **LoRA**, a fine-tuning technique that uses low-rank matrices to efficiently modify pre-trained models.
@@ -50,9 +50,12 @@ Install dependencies:
 pip install torch tiktoken
 ```
 
-## Evaluation
-The model was evaluated using the hellaswag dataset. For reference, gpt-2/gpt-3 was trained on 300B tokens while Arcane was trained on 10B tokens
-Arcane 124M without RoPE had a hellaswag accuracy of 0.3106
-Arcane 124M with RoPE had a hellaswag accuracy of 0.3074
-Gpt-2 124M had a hellaswag accuracy of 0.2955
-GPT-3 124M had a hellaswag accuracy of 0.3357
+## Model Comparison on HellaSwag Accuracy
+
+| Model                 | Token Count | HellaSwag Accuracy | RoPE |
+|-----------------------|-------------|--------------------|------|
+| GPT-2 124M            | 100B        | 0.2955             | No   |
+| GPT-3 124M            | 300B        | 0.3357             | No   |
+| Arcane 124M           | 10B         | 0.3106             | No   |
+| Arcane 124M (with RoPE)| 10B         | 0.3074             | Yes  |
+
