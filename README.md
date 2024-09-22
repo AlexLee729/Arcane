@@ -12,14 +12,7 @@ This repository contains **Arcane**, a small, educational GPT-like transformer m
 - [Overview](#overview)
 - [Model Architecture](#model-architecture)
 - [Requirements](#requirements)
-- [Usage](#usage)
-  - [Training](#training)
-  - [Validation](#validation)
-  - [Text Generation](#text-generation)
-- [LoRA Integration](#lora-integration)
-- [Learning Rate Schedule](#learning-rate-schedule)
-- [Checkpointing and Resuming Training](#checkpointing-and-resuming-training)
-- [Acknowledgments](#acknowledgments)
+- [Evaluation](#evaluation)
 
 ## Overview
 Arcane is based on the GPT-2 architecture and is built to help users learn how transformer models work by experimenting with a simplified model. The project includes support for **LoRA**, a fine-tuning technique that uses low-rank matrices to efficiently modify pre-trained models.
