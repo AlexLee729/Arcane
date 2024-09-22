@@ -24,7 +24,7 @@ Arcane is based on the GPT-2 architecture and is built to help users learn how t
 - **LoRA (Low-Rank Adaptation)**: Reduces the number of trainable parameters for efficient fine-tuning.
 
 ## Model Architecture
-MiniGPT is implemented in Python using **PyTorch**. The model contains the following key components:
+Arcane is implemented in Python using **PyTorch**. The model contains the following key components:
 
 1. **Embedding Layer**:
    - Token embedding (`wte`): Maps vocabulary tokens to a dense representation.
