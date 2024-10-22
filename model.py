@@ -5,7 +5,7 @@ from torch.nn import functional as F
 import tiktoken
 
 class LoRALayer(nn.Module):
-    def __init__(self, in_features, out_features, r=8, alpha=1.0):
+    def __init__(self, in_features: int, out_features: int, r: int = 8, alpha: float = 1.0):
         super().__init__()
         self.r = r  # Rank of the low-rank matrices
         self.alpha = alpha  # Scaling factor
@@ -17,7 +17,7 @@ class LoRALayer(nn.Module):
         # Scaling factor to be applied after projection
         self.scaling = self.alpha / self.r
         
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Apply LoRA: Multiply x by the low-rank matrices and scale the output
         return torch.matmul(x, self.lora_A).matmul(self.lora_B) * self.scaling
 
@@ -67,26 +67,22 @@ class CausalSelfAttention(nn.Module):
 
     def compute_rope(self, seq_len, device):
         """Computes RoPE dynamically, or retrieves from cache."""
-        if self.cached_seq_len == seq_len and self.cached_cos_sin is not None:
-            return self.cached_cos_sin
-
-        t = torch.arange(seq_len, dtype=torch.float32, device=device)
-        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos().unsqueeze(0).unsqueeze(0).to(dtype=torch.bfloat16)
-        sin = emb.sin().unsqueeze(0).unsqueeze(0).to(dtype=torch.bfloat16)
-
-        self.cached_seq_len = seq_len
-        self.cached_cos_sin = (cos, sin)
-        return cos, sin
+        if self.cached_seq_len is None or self.cached_seq_len < seq_len:
+            t = torch.arange(seq_len, dtype=torch.float32, device=device)
+            freqs = torch.einsum('i,j->ij', t, self.inv_freq)
+            emb = torch.cat((freqs, freqs), dim=-1)
+            cos = emb.cos().unsqueeze(0).unsqueeze(0).to(dtype=torch.bfloat16)
+            sin = emb.sin().unsqueeze(0).unsqueeze(0).to(dtype=torch.bfloat16)
+            self.cached_seq_len = seq_len
+            self.cached_cos_sin = (cos, sin)
+        return self.cached_cos_sin
     
     def forward(self, x, use_cache=False):
-        """Forward pass of the CausalSelfAttention module."""
         B, T, C = x.size()  # Batch size, sequence length, embedding size
 
         # Get QKV projections from the input
         qkv = self.c_attn(x.to(dtype=torch.bfloat16))
-        q, k, v = qkv.split(self.n_embd, dim=2)
+        q, k, v = qkv.chunk(3, dim=2)
 
         if self.use_lora:
             q = q + self.lora_q(q)  # LoRA applied to query
@@ -108,12 +104,12 @@ class CausalSelfAttention(nn.Module):
             self.cache_k = k
             self.cache_v = v
 
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        y = F.scaled_dot_product_attention(q, k, v, attn_mask=None, is_causal=True)
         y = y.transpose(1, 2).contiguous().view(B, T, C)
 
         y = self.c_proj(y)
         return y
-    
+   
 class MLP(nn.Module):
 
     def __init__(self, config):
@@ -223,7 +219,7 @@ class GPT(nn.Module):
         print(f"Model size: {num_decay_params + num_nodecay_params}")
         
         # Create AdamW optimizer
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8)
+        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=True)
         return optimizer
     
     def generate(self, prompt, max_length=32, num_return_sequences=1, top_k=50, device='cpu'):
