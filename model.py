@@ -159,7 +159,7 @@ class GPT(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd), # Final layer norm
         ))
         
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False, dtype=torch.bfloat16)
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         
         # Weight sharing scheme
         self.transformer.wte.weight = self.lm_head.weight
