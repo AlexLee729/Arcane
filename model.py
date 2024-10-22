@@ -28,8 +28,8 @@ class CausalSelfAttention(nn.Module):
         self.use_lora = use_lora
         
         # Linear layers for Q, K, V projections, and output projection
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, dtype=torch.bfloat16)
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, dtype=torch.bfloat16)
+        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
 
         if self.use_lora:
             self.lora_q = LoRALayer(config.n_embd, config.n_embd, r=lora_r, alpha=lora_alpha)
@@ -71,8 +71,8 @@ class CausalSelfAttention(nn.Module):
             t = torch.arange(seq_len, dtype=torch.float32, device=device)
             freqs = torch.einsum('i,j->ij', t, self.inv_freq)
             emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos().unsqueeze(0).unsqueeze(0).to(dtype=torch.bfloat16)
-            sin = emb.sin().unsqueeze(0).unsqueeze(0).to(dtype=torch.bfloat16)
+            cos = emb.cos().unsqueeze(0).unsqueeze(0)
+            sin = emb.sin().unsqueeze(0).unsqueeze(0)
             self.cached_seq_len = seq_len
             self.cached_cos_sin = (cos, sin)
         return self.cached_cos_sin
@@ -81,7 +81,7 @@ class CausalSelfAttention(nn.Module):
         B, T, C = x.size()  # Batch size, sequence length, embedding size
 
         # Get QKV projections from the input
-        qkv = self.c_attn(x.to(dtype=torch.bfloat16))
+        qkv = self.c_attn(x)
         q, k, v = qkv.chunk(3, dim=2)
 
         if self.use_lora:
@@ -114,13 +114,12 @@ class MLP(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd, dtype=torch.bfloat16)
+        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd)
         self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd, dtype=torch.bfloat16)
+        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd)
         self.c_proj.NANOGPT_SCALE_INIT = 1
 
     def forward(self, x):
-        x = x.to(dtype=torch.bfloat16)
         x = self.c_fc(x)
         x = self.gelu(x)
         x = self.c_proj(x)
