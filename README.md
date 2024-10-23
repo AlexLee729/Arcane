@@ -1,5 +1,7 @@
 # Arcane: A Minimal GPT-2 Inspired Model with LoRA
 
+### Multimodal Support
+Expand Arcane to incorporate computer vision and text-to-speech capabilities. This will enable the model to process and generate not only text but also visual and auditory data, making it suitable for a wider range of applications.
 This repository contains **Arcane**, a small, educational GPT-like transformer model inspired by GPT-2. The primary goal of this project is to provide an easy-to-understand implementation of GPT and explore advanced concepts such as **LoRA (Low-Rank Adaptation)** for fine-tuning. This project is designed to help researchers and engineers grasp the inner workings of GPT models through hands-on coding and experimentation.
 
 ## Features
@@ -17,7 +19,7 @@ This repository contains **Arcane**, a small, educational GPT-like transformer m
 ## Overview
 Arcane is based on the GPT-2 architecture and is built to help users learn how transformer models work by experimenting with a simplified model. The project includes support for **LoRA**, a fine-tuning technique that uses low-rank matrices to efficiently modify pre-trained models.
 
-### Key Concepts:
+### Key Concepts
 - **Transformer Blocks**: Multiple transformer layers with self-attention mechanisms.
 - **Multi-Head Self-Attention (MHSA)**: Implements attention across multiple heads.
 - **Rotary Positional Embeddings (RoPE)**: Improves performance by adding position-dependent transformations to queries and keys.
@@ -41,8 +43,8 @@ Arcane is implemented in Python using **PyTorch**. The model contains the follow
 
 ## Requirements
 To run this project, you need:
-- Python 3.8+
-- PyTorch
+- Python 3.10+
+- PyTorch 2.0+
 - `tiktoken` tokenizer library
 
 Install dependencies:
@@ -59,3 +61,12 @@ pip install torch tiktoken
 | Arcane 124M           | 10B         | 0.3036             | No   |
 | Arcane 124M           | 10B         | 0.3074             | Yes  |
 
+## Future Implementations
+
+We plan to expand Arcane with the following features:
+
+### Reinforcement Learning with Human Feedback (RLHF)
+Integrate RLHF to improve the model's performance by leveraging human feedback during training. This will help in refining the model's responses and making it more aligned with human expectations.
+
+### Proximal Policy Optimization (PPO)
+Implement PPO, a popular reinforcement learning algorithm, to optimize the policy of the model. This will enhance the model's ability to make decisions and generate more accurate and contextually appropriate responses.
