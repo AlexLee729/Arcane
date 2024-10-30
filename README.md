@@ -52,6 +52,10 @@ Install dependencies:
 pip install torch tiktoken
 ```
 
+## Model Training Performance
+The training and validation loss curves for the 124M model over training steps are shown below, the model was trained for 19073 steps:
+![2D Neuron](/images/training_val_graph.png)
+
 ## Model Comparison on HellaSwag Accuracy
 
 | Model                 | Data Size   | HellaSwag Accuracy | RoPE |
@@ -59,7 +63,7 @@ pip install torch tiktoken
 | GPT-2 124M            | 100B        | 0.2955             | No   |
 | GPT-3 124M            | 300B        | 0.3357             | No   |
 | Arcane 124M           | 10B         | 0.3036             | No   |
-| Arcane 124M           | 10B         | 0.3074             | Yes  |
+| Arcane 124M           | 10B         | 0.3083             | Yes  |
 
 ## Future Implementations
 
