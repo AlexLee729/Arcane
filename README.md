@@ -58,7 +58,7 @@ The training and validation loss curves for the 124M model over training steps a
 | Model                 | Training Loss   | Validation Loss |
 |-----------------------|-----------------|-----------------|
 | Arcane 124M           | 3.07            | 3.00            |
-| Arcane 355M           |                 |                 | 
+| Arcane 355M           | 2.89            | 2.88            | 
 
 
 ## Model Comparison on HellaSwag Accuracy
