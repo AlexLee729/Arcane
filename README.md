@@ -54,7 +54,7 @@ pip install torch tiktoken
 
 ## Model Training Performance
 The training and validation loss curves for the 124M model over training steps are shown below, the model was trained for 19073 steps:
-![2D Neuron](/images/training_val_graph.png)
+![Loss Graph](/images/Train_Val_graph.png)
 
 ## Model Comparison on HellaSwag Accuracy
 
