@@ -54,7 +54,7 @@ pip install torch tiktoken
 
 ## Model Training Performance
 The training and validation loss curves for the 124M model over training steps are shown below, the model was trained for 19073 steps:
-![Loss Graph](/images/Train_Val_graph.png)
+![Loss Graph](/Images/Train_Val_graph.png)
 | Model                 | Training Loss   | Validation Loss |
 |-----------------------|-----------------|-----------------|
 | Arcane 124M           | 3.07            | 3.00            |
