@@ -70,7 +70,7 @@ The training and validation loss curves for the 124M model over training steps a
 | Arcane 124M           | 10B         | 0.3036             | No   |
 | Arcane 124M           | 10B         | 0.3083             | Yes  |
 | Arcane 355M           | 10B         | 0.3266             | Yes  |
-| Arcane 1.3B           | 10B         | 0.3266             | Yes  |
+| Arcane 1.3B           | 10B         | 0.3414             | Yes  |
 
 ## Future Implementations
 
