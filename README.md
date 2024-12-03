@@ -74,7 +74,7 @@ The training and validation loss curves for the 3 models over training steps are
 
 ## Future Implementations
 
-We plan to expand Arcane with the following features:
+I plan to expand Arcane with the following features:
 
 ### Reinforcement Learning with Human Feedback (RLHF)
 Integrate RLHF to improve the model's performance by leveraging human feedback during training. This will help in refining the model's responses and making it more aligned with human expectations.
