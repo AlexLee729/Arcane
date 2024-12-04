@@ -71,6 +71,7 @@ The training and validation loss curves for the 3 models over training steps are
 | Arcane 124M           | 10B         | 0.3083             | Yes  |
 | Arcane 355M           | 10B         | 0.3266             | Yes  |
 | Arcane 1.3B           | 10B         | 0.3414             | Yes  |
+| Arcane 1.3B           | 20B         | 0.3881             | Yes  |
 
 ## Future Implementations
 
