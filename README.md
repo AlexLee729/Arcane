@@ -1,4 +1,4 @@
-# Arcane: A Minimal GPT-2 Inspired Model with LoRA
+# Arcane: A GPT-2 Inspired Model
 
 ### Multimodal Support
 Expand Arcane to incorporate computer vision and text-to-speech capabilities. This will enable the model to process and generate not only text but also visual and auditory data, making it suitable for a wider range of applications.
