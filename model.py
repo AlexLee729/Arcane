@@ -88,11 +88,13 @@ class MLP(nn.Module):
         self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd)
         self.gelu    = nn.GELU()
         self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
         x = self.c_fc(x)
         x = self.gelu(x)
         x = self.c_proj(x)
+        x = self.dropout(x)
         return x
 
 class Block(nn.Module):
@@ -115,6 +117,7 @@ class GPTConfig:
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
+    dropout: float = 0.0
 
 class GPT(nn.Module):
     def __init__(self, config):
@@ -185,7 +188,7 @@ class GPT(nn.Module):
     @torch.no_grad()
     def generate(self, prompt, max_length=32, num_return_sequences=1, top_k=50, top_p=0.95, temperature=1.0, device='cpu', eos_token_id=None):
         self.eval()  # Set model to evaluation mode
-        enc = tiktoken.get_encoding('gpt2')
+        enc = tiktoken.get_encoding('o200k_base')
 
         # Encode the prompt into token ids
         tokens = torch.tensor(enc.encode(prompt), dtype=torch.long, device=device).unsqueeze(0)
