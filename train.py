@@ -6,36 +6,36 @@ from dataloader import DataLoader
 import torch
 from model import GPT, GPTConfig
 
-# Learning rate schedule parameters
+# Device Setup
+if torch.cuda.is_available():
+    device = "cuda"
+elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+    device = "mps"
+else:
+    device = "cpu"
+print(f"Using device: {device}")
+
+# Hyperparameters and Scheduler
 lr = 6e-4 * 3
 warmup_steps = 715
 max_steps = 19073
 
-# attempt to autodetect device
-device = "cpu"
-if torch.cuda.is_available():
-    device = "cuda"
-elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    device = "mps"
-print(f"using device: {device}")
-
-# Batch parameters
-total_batch_size = 2**19  # ~0.5M tokens
-B = 2  # Micro batch size
-T = 1024  # Sequence length
-assert total_batch_size % (B * T) == 0, "make sure total_batch_size is divisible by B * T * ddp_world_size"
+total_batch_size = 2**19    # ~0.5M tokens
+B = 2                       # Micro batch size
+T = 1024                    # Sequence length
+assert total_batch_size % (B * T) == 0, "Batch size must be divisible by B * T"
 grad_accum_steps = total_batch_size // (B * T)
-print(f"total desired batch size: {total_batch_size}")
-print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
+print(f"Total desired batch size: {total_batch_size} tokens")
+print(f"Calculated gradient accumulation steps: {grad_accum_steps}")
 
-# Data loaders
+# DataLoader Setup
 train_loader = DataLoader(B=B, T=T, split="train")
 val_loader = DataLoader(B=B, T=T, split="val")
 
 # Model setup
-model = GPT(GPTConfig(vocab_size=200064))
+model = GPT(GPTConfig(vocab_size=50304)) # 200064 is the size of the tokenizer vocabulary
 model.to(device)
-    
+
 optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=lr)
 scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=lr, total_steps=max_steps)
 
@@ -76,7 +76,7 @@ for step in range(start_step, max_steps):
         with torch.no_grad():
             for _ in range(val_loss_steps):
                 x, y = val_loader.next_batch()
-                x, y = x.to(device), y.to(device)
+                x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
                 with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     _, loss = model(x, y)
                 val_loss_accum += loss / val_loss_steps
@@ -107,7 +107,7 @@ for step in range(start_step, max_steps):
     # Gradient accumulation
     for micro_step in range(grad_accum_steps):
         x, y = train_loader.next_batch()
-        x, y = x.to(device), y.to(device)
+        x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
         with torch.autocast(device_type=device, dtype=torch.bfloat16):
             _, loss = model(x, y)
         loss = loss / grad_accum_steps

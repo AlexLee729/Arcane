@@ -1,9 +1,13 @@
+from __future__ import annotations
 from dataclasses import dataclass
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-from torch.nn import functional as F
+import torch.nn.functional as F
 import tiktoken
-    
+import math
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -81,158 +85,197 @@ class CausalSelfAttention(nn.Module):
         y = self.c_proj(y)
         return y
 
-   
 class MLP(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: GPTConfig):
         super().__init__()
-        self.c_fc    = nn.Linear(config.n_embd, 4 * config.n_embd)
-        self.gelu    = nn.GELU()
-        self.c_proj  = nn.Linear(4 * config.n_embd, config.n_embd)
-        self.dropout = nn.Dropout(config.dropout)
+        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
+        self.act = nn.SiLU()
+        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
 
-    def forward(self, x):
-        x = self.c_fc(x)
-        x = self.gelu(x)
-        x = self.c_proj(x)
-        x = self.dropout(x)
-        return x
+    def forward(self, x: torch.Tensor):
+        return self.c_proj(self.act(self.c_fc(x)))
+
 
 class Block(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
+    """
+    Transformer block combining attention and feed-forward layers.
 
-    def forward(self, x, attention_mask=None, use_cache=False):
-        x = x + self.attn(self.ln_1(x), attention_mask=attention_mask, use_cache=use_cache)
-        x = x + self.mlp(self.ln_2(x))
+    Attributes:
+        attn (nn.Module): Attention layer.
+        mlp (nn.Module): Feed-forward network (MLP).
+        attn_norm (nn.Module): Layer normalization for attention.
+        ffn_norm (nn.Module): Layer normalization for feed-forward network.
+    """
+    def __init__(self, config: GPTConfig):
+        super().__init__()
+        self.attn = CausalSelfAttention(config)
+        self.ffn = MLP(config)
+        self.attn_norm = nn.RMSNorm(config.n_embd)
+        self.ffn_norm = nn.RMSNorm(config.n_embd)
+
+    def forward(self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None, use_cache: bool = False):
+        x = x + self.attn(self.attn_norm(x), attention_mask=attention_mask, use_cache=use_cache)
+        x = x + self.ffn(self.ffn_norm(x))
         return x
+
 
 @dataclass
 class GPTConfig:
-    block_size: int = 1024
-    vocab_size: int = 50257
+    n_embd: int = 768
     n_layer: int = 12
     n_head: int = 12
-    n_embd: int = 768
-    dropout: float = 0.0
+    vocab_size: int = 50257
+    block_size: int = 1024
 
 class GPT(nn.Module):
-    def __init__(self, config):
+    """
+    GPT-style Transformer language model.
+    Uses token embeddings (with weight tying for output logits),
+    LayerNorm, and rotary embeddings within the attention mechanism.
+    """
+    def __init__(self, config: GPTConfig) -> None:
         super().__init__()
         self.config = config
-        
-        self.transformer = nn.ModuleDict({
-            'wte': nn.Embedding(config.vocab_size, config.n_embd),
-            'wpe': nn.Embedding(config.block_size, config.n_embd),
-            'h': nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            'ln_f': nn.LayerNorm(config.n_embd)
-        })
-        
+
+        # Token embeddings.
+        self.wte = nn.Embedding(config.vocab_size, config.n_embd)
+
+        # Transformer blocks.
+        self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layer)])
+        self.ln_f = nn.LayerNorm(config.n_embd)
+
+        # Output head with weight tying.
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.transformer.wte.weight = self.lm_head.weight
+        self.lm_head.weight = self.wte.weight
+
         self.apply(self._init_weights)
-    
-    def _init_weights(self, module):
+
+    def _init_weights(self, module: nn.Module) -> None:
+        """Initialize weights for linear and embedding layers."""
         if isinstance(module, nn.Linear):
-            torch.nn.init.xavier_uniform_(module.weight)
+            nn.init.xavier_uniform_(module.weight)
             if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
+                nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-    
-    def forward(self, idx, targets=None, attention_mask=None, use_cache=False):
-        _, T = idx.size()
-        assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(
+        self,
+        idx: torch.Tensor,
+        targets: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        use_cache: bool = False
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Forward pass of the GPT model.
         
-        # Forward the token and posisition embeddings
-        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # Position indices
-        pos_emb = self.transformer.wpe(pos) # Position embeddings of shape (T, n_embd)
-        tok_emb = self.transformer.wte(idx) # Token embeddings of shape (B, T, n_embd)
-        x = tok_emb + pos_emb
-        
-        # Forward the blocks of the transformer
-        for block in self.transformer.h:
-            x = block(x, attention_mask=attention_mask, use_cache=use_cache)
+        Args:
+            idx: Input token indices of shape (B, T).
+            targets: Optional target indices for loss computation.
+            attention_mask: Optional attention mask.
+            use_cache: Whether to enable caching (for generation).
             
-        # Forward the final layernorm and the classifier
-        x = self.transformer.ln_f(x)
-        logits = self.lm_head(x) # (B, T, vocab_size)
-        
+        Returns:
+            A tuple of (logits, loss), where loss is None if targets are not provided.
+        """
+        B, T = idx.size()
+        if T > self.config.block_size:
+            raise ValueError(f"Sequence length {T} exceeds block size {self.config.block_size}")
+
+        # Token embedding.
+        x = self.wte(idx)  # (B, T, n_embd)
+
+        # Transformer blocks.
+        for block in self.blocks:
+            x = block(x, attention_mask=attention_mask, use_cache=use_cache)
+
+        # Final layer normalization.
+        x = self.ln_f(x)
+        logits = self.lm_head(x)  # (B, T, vocab_size)
+
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         return logits, loss
-    
-    def configure_optimizers(self, weight_decay, learning_rate):
-        # start with all of the candidate parameters (that require grad)
+
+    def configure_optimizers(self, weight_decay: float, learning_rate: float):
+        """
+        Set up the optimizer with separate parameter groups for weight decay.
+        """
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
-        
-        # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
-        decay_params = [p for _, p in param_dict.items() if p.dim() >= 2]
-        nodecay_params = [p for _, p in param_dict.items() if p.dim() < 2]
+        decay_params = [p for p in param_dict.values() if p.dim() >= 2]
+        nodecay_params = [p for p in param_dict.values() if p.dim() < 2]
+
         optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0}
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
         ]
-        
         total_params = sum(p.numel() for p in self.parameters())
-        print(f"Total number of parameters in the model: {total_params}")
-        
-        # Create AdamW optimizer
+        print(f"Total number of parameters: {total_params}")
+
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=True)
         return optimizer
 
     @torch.no_grad()
-    def generate(self, prompt, max_length=32, num_return_sequences=1, top_k=50, top_p=0.95, temperature=1.0, device='cpu', eos_token_id=None):
-        self.eval()  # Set model to evaluation mode
-        enc = tiktoken.get_encoding('o200k_base')
-
-        # Encode the prompt into token ids
+    def generate(
+        self,
+        prompt: str,
+        max_length: int = 32,
+        num_return_sequences: int = 1,
+        top_k: int = 50,
+        top_p: float = 0.95,
+        temperature: float = 1.0,
+        device: str = "cpu",
+        eos_token_id: Optional[int] = None,
+    ) -> torch.Tensor:
+        """
+        Generate text from a given prompt using top-k and nucleus (top-p) sampling.
+        
+        Args:
+            prompt: The text prompt.
+            max_length: Maximum sequence length (including prompt).
+            num_return_sequences: Number of sequences to generate.
+            top_k: The number of top tokens to consider for sampling.
+            top_p: The cumulative probability threshold for nucleus sampling.
+            temperature: Temperature for scaling logits.
+            device: Device to run the generation on.
+            eos_token_id: Optional end-of-sequence token id to stop generation early.
+            
+        Returns:
+            Generated token indices of shape (num_return_sequences, sequence_length).
+        """
+        self.eval()
+        enc = tiktoken.get_encoding("o200k_base")
         tokens = torch.tensor(enc.encode(prompt), dtype=torch.long, device=device).unsqueeze(0)
-        tokens = tokens.repeat(num_return_sequences, 1)  # Repeat for num_return_sequences
+        tokens = tokens.repeat(num_return_sequences, 1)
+        generated = tokens
 
-        # Initialize the generated sequence tensor
-        xgen = tokens
+        # Clear caches for all blocks.
+        for block in self.blocks:
+            block.attn.clear_cache()
 
-        with torch.no_grad():  # Disable gradients for inference to save memory
-            # Clear cache in transformer blocks
-            for block in self.transformer.h:
-                block.attn.clear_cache()
+        for _ in range(max_length - tokens.size(1)):
+            logits, _ = self(generated, use_cache=True)
+            next_logits = logits[:, -1, :] / temperature
 
-            # Generate tokens
-            for _ in range(max_length - tokens.size(1)):  # Loop until max_length is reached
-                logits, _ = self(xgen, use_cache=True)  # (B, T, vocab_size)
-                logits = logits[:, -1, :] / temperature  # Scale logits by temperature
+            # Top-k sampling.
+            if top_k > 0:
+                topk_probs, topk_indices = torch.topk(next_logits, top_k, dim=-1)
+                topk_probs = F.softmax(topk_probs, dim=-1)
+                next_token = topk_indices.gather(-1, torch.multinomial(topk_probs, num_samples=1))
+            # Nucleus (top-p) sampling.
+            elif top_p < 1.0:
+                sorted_logits, sorted_indices = torch.sort(next_logits, descending=True, dim=-1)
+                cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+                sorted_logits[cumulative_probs > top_p] = -float("Inf")
+                probs = F.softmax(sorted_logits, dim=-1)
+                next_token = sorted_indices.gather(-1, torch.multinomial(probs, num_samples=1))
+            else:
+                probs = F.softmax(next_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1)
 
-                # Apply top-k sampling
-                if top_k > 0:
-                    topk_probs, topk_indices = torch.topk(logits, top_k, dim=-1)
-                    topk_probs = F.softmax(topk_probs, dim=-1)
-                    sampled_index = torch.multinomial(topk_probs, 1)  # Sample from top-k
-                    sampled_token = topk_indices.gather(-1, sampled_index)  # Get corresponding token
-                # Apply top-p (nucleus) sampling
-                elif top_p > 0.0:
-                    sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
-                    cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-                    sorted_indices_to_remove = cumulative_probs > top_p
-                    sorted_logits[sorted_indices_to_remove] = -float('Inf')  # Remove tokens that exceed top-p
+            if eos_token_id is not None and (next_token == eos_token_id).all():
+                break
 
-                    probs = F.softmax(sorted_logits, dim=-1)
-                    sampled_token = torch.multinomial(probs, 1)  # Sample token
-                    sampled_token = sorted_indices.gather(-1, sampled_token)
-                # Default to full sampling (no top-k, no top-p)
-                else:
-                    probs = F.softmax(logits, dim=-1)  # Full distribution
-                    sampled_token = torch.multinomial(probs, 1)  # Sample token
-
-                # Handle EOS token (stop early if reached)
-                if eos_token_id is not None and sampled_token == eos_token_id:
-                    break
-
-                # Append the sampled token to the generated sequence
-                xgen = torch.cat((xgen, sampled_token), dim=1)
-
-        return xgen
+            generated = torch.cat((generated, next_token), dim=1)
+        return generated
