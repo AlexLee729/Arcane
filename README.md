@@ -1,8 +1,7 @@
 # Arcane: A GPT-2 Inspired Model
 
 ### Multimodal Support
-Expand Arcane to incorporate computer vision and text-to-speech capabilities. This will enable the model to process and generate not only text but also visual and auditory data, making it suitable for a wider range of applications.
-This repository contains **Arcane**, a small, educational GPT-like transformer model inspired by GPT-2. The primary goal of this project is to provide an easy-to-understand implementation of GPT and explore advanced concepts such as **LoRA (Low-Rank Adaptation)** for fine-tuning. This project is designed to help researchers and engineers grasp the inner workings of GPT models through hands-on coding and experimentation.
+Arcane is a refined, educational GPT-style transformer model built in PyTorch. Inspired by GPT-2, it offers an accessible yet advanced implementation designed to illustrate modern techniques in transformer-based language modeling. Key enhancements include efficient activation checkpointing, rotary positional embeddings (RoPE), a custom RMS normalization layer with recomputation, and a modular design that facilitates further innovations such as low-rank adaptation (LoRA).
 
 ## Features
 - **GPT Architecture**: Implements a small GPT-2 style transformer model.
