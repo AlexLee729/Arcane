@@ -1,14 +1,17 @@
 # Arcane: A GPT-2 Inspired Model
 
 ### Multimodal Support
-Expand Arcane to incorporate computer vision and text-to-speech capabilities. This will enable the model to process and generate not only text but also visual and auditory data, making it suitable for a wider range of applications.
-This repository contains **Arcane**, a small, educational GPT-like transformer model inspired by GPT-2. The primary goal of this project is to provide an easy-to-understand implementation of GPT and explore advanced concepts such as **LoRA (Low-Rank Adaptation)** for fine-tuning. This project is designed to help researchers and engineers grasp the inner workings of GPT models through hands-on coding and experimentation.
+Arcane is a refined, educational GPT-style transformer model built in PyTorch. Inspired by GPT-2, it offers an accessible yet advanced implementation designed to illustrate modern techniques in transformer-based language modeling. Key enhancements include efficient activation checkpointing, rotary positional embeddings (RoPE), a custom RMS normalization layer with recomputation, and a modular design that facilitates further innovations such as low-rank adaptation (LoRA).
 
 ## Features
-- **GPT Architecture**: Implements a small GPT-2 style transformer model.
-- **LoRA Support**: Integrates LoRA layers for efficient fine-tuning, allowing experimentation with lower-rank projections.
-- **Rotary Positional Embeddings (RoPE)**: Uses RoPE for positional encoding in self-attention.
-- **Optimized Training**: Gradient accumulation, learning rate scheduling, and mixed-precision support for efficient training.
+- **Compact Transformer Architecture**: A GPT-2–inspired model with a clear, modular structure.
+- **Efficient Normalization**: Uses an RMS normalization layer with activation checkpointing to reduce memory usage during training.
+- **Rotary Positional Embeddings (RoPE)**: Applies RoPE to enhance the positional encoding within self-attention.
+- **Memory-Efficient Self-Attention**: Implements multi-head causal self-attention with key/value caching and activation checkpointing.
+- **Advanced MLP Design**: Features a custom three-part feed-forward network that leverages SiLU activation.
+- **Optimized Weight Initialization**: Employs improved initialization schemes for both linear and embedding layers.
+- **Custom Optimizer Configuration**: Uses AdamW with distinct parameter groups for weight decay management.
+- **Robust Text Generation**: Supports top‑k and nucleus (top‑p) sampling methods for generating coherent sequences.
 
 ## Table of Contents
 - [Overview](#overview)
