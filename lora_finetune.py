@@ -1,69 +1,66 @@
-import torch
-import time
-import tiktoken
 import os
-from dataloader import JSONDataLoader
+import time
+import torch
+import copy
+import numpy as np
+from dataloader import DataLoader
 from model import GPT, GPTConfig
 from peft import LoraConfig, get_peft_model
-from torch.distributed import init_process_group, destroy_process_group
-from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
-import numpy as np
-        
-data_dir = "./Data"  # Path to your data directory
-# Hyperparameters
-lr = 2e-5
-max_steps = 314 * 10
-block_size = 1024
-batch_size = 8
+from torch.nn.parallel import DistributedDataParallel as DDP
 
-ddp = int(os.environ.get('RANK', -1)) != -1 
-
+# -----------------------------------------------------------------------------
+# Distributed Setup
+# -----------------------------------------------------------------------------
+ddp = int(os.environ.get('RANK', -1)) != -1
 if ddp:
-    # use of DDP atm demands CUDA, we set the device appropriately according to rank
-    assert torch.cuda.is_available(), "DDP requires CUDA"
-    init_process_group(backend='nccl')
+    assert torch.cuda.is_available(), "CUDA is required for DDP."
+    dist.init_process_group(backend='nccl')
     ddp_rank = int(os.environ['RANK'])
     ddp_local_rank = int(os.environ['LOCAL_RANK'])
     ddp_world_size = int(os.environ['WORLD_SIZE'])
     device = f'cuda:{ddp_local_rank}'
     torch.cuda.set_device(device)
-    master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
 else:
-    # vanilla, non-DDP run
-    ddp_rank = 0
-    ddp_local_rank = 0
+    ddp_rank = ddp_local_rank = 0
     ddp_world_size = 1
-    master_process = True
-    # attempt to autodetect device
-    device = "cpu"
-    if torch.cuda.is_available():
-        device = "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = "mps"
-    print(f"using device: {device}")
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    print(f"Using device: {device}")
 
+is_master_node = os.environ.get("SLURM_NODEID", "0") == "0"
+master_process = (ddp and ddp_rank == 0 and is_master_node) or (not ddp)
 device_type = "cuda" if device.startswith("cuda") else "cpu"
 
-total_batch_size = 2 ** 20  # ~32k tokens
-B, T = 8, 1024                # Micro-batch size and sequence length
-grad_accum_steps = total_batch_size // (B * T)
+# -----------------------------------------------------------------------------
+# Hyperparameters
+# -----------------------------------------------------------------------------
+lr = 3e-4
+max_steps = 19073 * 2
+total_batch_size = 2**19  # 524,288 tokens
+B, T = 8, 2048
+tokens_per_micro_batch = B * T
+grad_accum_steps = total_batch_size // (ddp_world_size * tokens_per_micro_batch)
+assert grad_accum_steps > 0, "Batch size too small or too many GPUs"
+
 if master_process:
-    print(f"total desired batch size: {total_batch_size}")
-    print(f"=> calculated gradient accumulation steps: {grad_accum_steps}")
-    
-# Load GPT-2 tokenizer
-enc = tiktoken.get_encoding('gpt2')
+    print(f"Total desired batch size: {total_batch_size} tokens")
+    print(f"=> Gradient accumulation steps: {grad_accum_steps}")
 
-train_loader = JSONDataLoader(data_dir="Data", B=B, split="train")
-val_loader = JSONDataLoader(data_dir="Data", B=B, split="val")
+# -----------------------------------------------------------------------------
+# Data Loaders
+# -----------------------------------------------------------------------------
+train_loader = DataLoader(B=B, T=T, split="train")
+val_loader = DataLoader(B=B, T=T, split="val")
 
-# Model configuration and initialization
+# -----------------------------------------------------------------------------
+# Model Setup
+# -----------------------------------------------------------------------------
 torch.set_float32_matmul_precision('high')
-model = GPT(GPTConfig(vocab_size=50304, n_layer=24, n_head=16, n_embd=2048))
+
+model = GPT(GPTConfig(vocab_size=50304, n_layer=24, n_head=16, n_embd=1024, block_size=T))
 
 log_dir = "log"
-checkpoint_path = os.path.join(log_dir, "ArcaneGPT.pt")
+checkpoint_path = os.path.join(log_dir, "arcane3.pt")
 
 if os.path.exists(checkpoint_path):
     # Load checkpoint
@@ -71,91 +68,118 @@ if os.path.exists(checkpoint_path):
     model.load_state_dict(checkpoint['model'])
   
 lora_config = LoraConfig(
-    r=16,  
+    r=8,  
     lora_alpha=32,  
-    target_modules=["c_attn", "c_proj", "c_fc"],  
-    lora_dropout=0.1,
+    target_modules=["c_attn", "c_proj", "c_fc", "c_fc2"],  
+    lora_dropout=0.05,
     bias="lora_only"
 )
 
 model = get_peft_model(model, lora_config)
 model.to(device)
 if ddp:
-    model = DDP(model, device_ids=[ddp_local_rank], find_unused_parameters=True)
+    model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module if ddp else model
 
-# Optimizer
-optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=lr)
+optimizer = raw_model.configure_optimizers(weight_decay=0.01, learning_rate=lr)
+scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    optimizer, max_lr=lr, total_steps=max_steps, anneal_strategy='cos', pct_start=0.04
+)
 
-# Count trainable parameters in LoRA layers
-trainable_params_count = sum(param.numel() for param in model.parameters() if param.requires_grad)
-print(f"Number of trainable parameters (LoRA layers): {trainable_params_count}")
-
+# Load checkpoint if available
+log_dir = "log"
 os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, "log1_3B_ft.txt")
+log_file = os.path.join(log_dir, "log_ft.txt")
 
+if master_process:
+    with open(log_file, "w") as f:
+        f.write("")
+
+if master_process:
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable parameters (LoRA): {trainable_params}")
+
+# -----------------------------------------------------------------------------
+# Training Loop
+# -----------------------------------------------------------------------------
 for step in range(max_steps):
     t0 = time.time()
-    
-    # Validation check every 5 steps or at the last step
-    if step % 200 == 0 or step == max_steps - 1:
+
+    # ----- Validation -----
+    if step % 250 == 0 or step == max_steps - 1:
         model.eval()
-        val_loss_accum = 0.0
-        val_loss_steps = 200
+        val_loss_accum = torch.tensor(0.0, device=device)
         with torch.no_grad():
-            for _ in range(val_loss_steps):
-                x, y, attention_mask = val_loader.next_batch()
-                x, y, attention_mask = x.to(device), y.to(device), attention_mask.to(device)
+            for _ in range(250):
+                x, y = val_loader.next_batch()
+                x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
                 with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                    _, loss = model(x, y, attention_mask)
-                val_loss_accum += loss / val_loss_steps
+                    _, loss = model(x, y)
+                val_loss_accum += loss / 250
 
         if ddp:
             dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
+
         if master_process:
             val_loss = val_loss_accum.item()
             with open(log_file, "a") as f:
-                f.write(f"step: {step} | val: {val_loss:.4f}\n")
+                f.write(f"Step {step:5d} | Validation Loss: {val_loss:.4f}\n")
 
+    # ----- Checkpointing -----
     if step % 250 == 0 or step == max_steps - 1:
-        raw_model.merge_and_unload()
-        checkpoint_data = {
-            'model': raw_model.state_dict(),  # Save the model weights
+        checkpoint = {
+            'model': raw_model.state_dict(),
             'step': step,
             'val_loss': val_loss_accum.item(),
-            'optimizer': optimizer.state_dict()
+            'optimizer': optimizer.state_dict(),
+            'scheduler': scheduler.state_dict(),
+            'current_shard': train_loader.current_shard,
+            'current_position': train_loader.current_position
         }
-        torch.save(checkpoint_data, os.path.join(log_dir, f"arcaneGPT_latest_checkpoint.pt"))
-        if step % 2500 == 0 or step == max_steps - 1:
-            torch.save({'model': raw_model.state_dict()}, os.path.join(log_dir, f"ArcaneGPT_ft.pt"))
-    
-    # Training with gradient accumulation
+        if master_process:
+            torch.save(checkpoint, "/lustre/uschill-lab/users/3931/arcaneGPT_latest_checkpoint.pt")
+            if (step % 5000 == 0 and step > 0) or step == max_steps - 1:
+                model2 = copy.deepcopy(raw_model)
+                model2 = model2.merge_and_unload()
+                torch.save({'model': model2.state_dict()}, f"/lustre/uschill-lab/users/3931/ArcaneGPT_ft_step_{step}.pt")
+
+    # ----- Final Model Save -----
+    if step == max_steps - 1:
+        merged_model = raw_model.merge_and_unload()
+        if master_process:
+            torch.save({'model': merged_model.state_dict()}, "/lustre/uschill-lab/users/3931/ArcaneGPT_ft.pt")
+
+    # ----- Training -----
     model.train()
     optimizer.zero_grad(set_to_none=True)
     loss_accum = 0.0
 
     # Gradient accumulation
     for micro_step in range(grad_accum_steps):
-        x, y, attention_mask = train_loader.next_batch()
-        x, y, attention_mask = x.to(device), y.to(device), attention_mask.to(device)
-
+        x, y = train_loader.next_batch()
+        x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
         if ddp:
             model.require_backward_grad_sync = (micro_step == grad_accum_steps - 1)
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-            _, loss = model(x, y, attention_mask)
+            _, loss = model(x, y)
         loss = loss / grad_accum_steps
-        loss_accum += loss
+        loss_accum += loss.detach()
         loss.backward()
+        
     if ddp:
         dist.all_reduce(loss_accum, op=dist.ReduceOp.AVG)
+
     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
+    scheduler.step()
 
-    # Logging
-    t1 = time.time()
     if master_process:
+        t1 = time.time()
         with open(log_file, "a") as f:
-            f.write(f"Step {step:5d} | Training loss: {loss_accum:.6f} | Time: {t1 - t0:.2f}s\n")
+            f.write(f"Step {step:5d} | Training Loss: {loss_accum.item():.6f} | Time: {t1 - t0:.2f}s\n")
 
+# -----------------------------------------------------------------------------
+# Cleanup
+# -----------------------------------------------------------------------------
 if ddp:
-    destroy_process_group()
+    dist.destroy_process_group()
