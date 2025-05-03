@@ -25,7 +25,6 @@ Arcane is based on the GPT-2 architecture and is built to help users learn how t
 ### Key Concepts
 - **Transformer Blocks**: Multiple transformer layers with self-attention mechanisms.
 - **Multi-Head Self-Attention (MHSA)**: Implements attention across multiple heads.
-- **Rotary Positional Embeddings (RoPE)**: Improves performance by adding position-dependent transformations to queries and keys.
 - **LoRA (Low-Rank Adaptation)**: Reduces the number of trainable parameters for efficient fine-tuning.
 
 ## Model Architecture
