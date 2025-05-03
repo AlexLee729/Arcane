@@ -70,11 +70,11 @@ The training and validation loss curves for the 3 models over training steps are
 |-----------------------|-------------|--------------------|------|
 | GPT-2 124M            | 100B        | 0.2955             | No   |
 | GPT-3 124M            | 300B        | 0.3357             | No   |
-| Arcane 124M           | 10B         | 0.3036             | No   |
-| Arcane 124M           | 10B         | 0.3083             | Yes  |
-| Arcane 355M           | 10B         | 0.3266             | Yes  |
-| Arcane 1.3B           | 10B         | 0.3414             | Yes  |
-| Arcane 1.3B           | 20B         | 0.3881             | Yes  |
+| Custom LLM 124M       | 10B         | 0.3036             | No   |
+| Custom LLM 124M       | 10B         | 0.3083             | Yes  |
+| Custom LLM 355M       | 10B         | 0.3266             | Yes  |
+| Custom LLM 1.3B       | 10B         | 0.3414             | Yes  |
+| Custom LLM 1.3B       | 20B         | 0.3881             | Yes  |
 
 ## Future Implementations
 
