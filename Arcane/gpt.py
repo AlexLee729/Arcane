@@ -211,40 +211,43 @@ class GPT(nn.Module):
             logits = self.lm_head(x)
             logits = softcap * torch.tanh(logits / softcap) # logits softcap
             return logits
-
+    
     @torch.inference_mode()
-    def generate(self, tokens, max_tokens, temperature=1.0, top_k=None):
-        assert isinstance(tokens, list) 
-        device = self.get_device()
-        # Initialize KV cache for efficient inference
+    def generate(model, tokens, max_tokens, temperature=1.0, top_k=None):
+        device = model.get_device()
+
         kv_cache = KVCache(
-        n_layer=self.config.n_layer,
-        max_seq_len=self.config.sequence_len,
-        n_head=self.config.n_head,
-        head_dim=self.config.n_embd // self.config.n_head,
-        device=device,
-        dtype=self.transformer.wte.weight.dtype
+            n_layer=model.config.n_layer,
+            max_seq_len=model.config.sequence_len,
+            n_head=model.config.n_head,
+            head_dim=model.config.n_embd // model.config.n_head,
+            device=device,
+            dtype=model.transformer.wte.weight.dtype
         )
-        ids = torch.tensor([tokens], dtype=torch.long, device=device)  # Convert tokens to tensor
+
+        ids = torch.tensor([tokens], dtype=torch.long, device=device)
         generated_tokens = []
-        logits = self.forward(ids, kv_cache=kv_cache)  # Initial forward pass
-        kv_cache.update_pos(ids.size(1))  # Update cache position
+
+        logits = model(ids, kv_cache=kv_cache)
+        kv_cache.update_pos(ids.size(1))
+
         for _ in range(max_tokens):
-            logits = logits[:, -1, :]  # Get logits for last token
+            logits = logits[:, -1, :]  # last token logits
+
             if top_k is not None:
-                # Apply top-k sampling
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float('Inf')
+                logits[logits < v[:, [-1]]] = -float('inf')
+
             if temperature > 0:
-                # Apply temperature scaling and sample
-                logits = logits / temperature
-                probs = F.softmax(logits, dim=-1)
+                probs = F.softmax(logits / temperature, dim=-1)
                 next_ids = torch.multinomial(probs, num_samples=1)
             else:
-                # Greedy decoding
                 next_ids = torch.argmax(logits, dim=-1, keepdim=True)
-            ids = torch.cat((ids, next_ids), dim=1)  # Append new token
-            generated_tokens.append(next_ids.item())  # Store generated token
-            logits = self.forward(next_ids, kv_cache=kv_cache)  # Forward with single token
-            kv_cache.update_pos(1)  # Update cache position
+
+            ids = torch.cat((ids, next_ids), dim=1)
+            generated_tokens.append(next_ids.item())
+
+            logits = model(next_ids, kv_cache=kv_cache)
+            kv_cache.update_pos(1)
+
         return generated_tokens
