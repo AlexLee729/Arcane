@@ -9,21 +9,22 @@ from Arcane.kv_cache import KVCache
 
 @dataclass
 class GPTConfig:
-    sequence_len: int = 1024  
-    vocab_size: int = 50304  
-    n_layer: int = 12    
-    n_head: int = 6       
-    n_embd: int = 768   
+    sequence_len: int = 1024
+    vocab_size: int = 50304
+    n_layer: int = 12
+    n_head: int = 6 
+    n_kv_head: int = 6
+    n_embd: int = 768  
 
 def norm(x):
     # Purely functional rmsnorm with no learnable params
     return F.rms_norm(x, (x.size(-1),))
 
 def apply_rotary_emb(x, cos, sin):
-    assert x.ndim == 4  # multihead attention
+    assert x.ndim == 4
     d = x.shape[3] // 2
-    x1, x2 = x[..., :d], x[..., d:] # split up last time into two halves
-    y1 = x1 * cos + x2 * sin # rotate pairs of dims
+    x1, x2 = x[..., :d], x[..., d:]
+    y1 = x1 * cos + x2 * sin 
     y2 = x1 * (-sin) + x2 * cos
     out = torch.cat([y1, y2], 3) # re-assemble
     out = out.to(x.dtype) # ensure input/output dtypes match
@@ -34,12 +35,14 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         self.layer_idx = layer_idx
         self.n_head = config.n_head
+        self.n_kv_head = config.n_kv_head
         self.n_embd = config.n_embd
-        self.head_dim = self.n_embd // self.n_head 
+        self.head_dim = self.n_embd // self.n_head
         assert self.n_embd % self.n_head == 0
+        assert self.n_kv_head <= self.n_head and self.n_head % self.n_kv_head == 0
         self.c_q = nn.Linear(self.n_embd, self.n_head * self.head_dim, bias=False)
-        self.c_k = nn.Linear(self.n_embd, self.n_head * self.head_dim, bias=False) 
-        self.c_v = nn.Linear(self.n_embd, self.n_head * self.head_dim, bias=False) 
+        self.c_k = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+        self.c_v = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
         self.c_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
 
     def forward(self, x, cos_sin, kv_cache):
@@ -47,37 +50,36 @@ class CausalSelfAttention(nn.Module):
 
         # Project the input to get queries, keys, and values
         q = self.c_q(x).view(B, T, self.n_head, self.head_dim)
-        k = self.c_k(x).view(B, T, self.n_head, self.head_dim)
-        v = self.c_v(x).view(B, T, self.n_head, self.head_dim)
+        k = self.c_k(x).view(B, T, self.n_kv_head, self.head_dim)
+        v = self.c_v(x).view(B, T, self.n_kv_head, self.head_dim)
 
-        # Apply Rotary Embeddings to queries and keys to get relative positional encoding
+        # Apply Rotary Embeddings to queries and keys
         cos, sin = cos_sin
-        q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin) # QK rotary embedding
-        q, k = norm(q), norm(k) # QK norm
-        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2) # make head be batch dim, i.e. (B, T, H, D) -> (B, H, T, D)
+        q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
+        q, k = norm(q), norm(k)
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
 
-        # Apply KV cache: insert current k,v into cache, get the full view so far
+        # Apply KV cache
         if kv_cache is not None:
             k, v = kv_cache.insert_kv(self.layer_idx, k, v)
-        Tq = q.size(2) # number of queries in this forward pass
-        Tk = k.size(2) # number of keys/values in total (in the cache + current forward pass)
-        
+        Tq = q.size(2)
+        Tk = k.size(2)
+
+        # Attention
+        enable_gqa = self.n_head != self.n_kv_head
         if kv_cache is None or Tq == Tk:
-            # Full causal attention for training or initial inference
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
         elif Tq == 1:
-            # Single-token inference with cached keys/values
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=False)
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=False, enable_gqa=enable_gqa)
         else:
-            # Chunked inference with cached keys/values
             attn_mask = torch.zeros((Tq, Tk), dtype=torch.bool, device=q.device)
             prefix_len = Tk - Tq
             if prefix_len > 0:
                 attn_mask[:, :prefix_len] = True
             attn_mask[:, prefix_len:] = torch.tril(torch.ones((Tq, Tq), dtype=torch.bool, device=q.device))
-            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
-        
-        # Re-assemble the heads side by side and project back to residual stream
+            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, enable_gqa=enable_gqa)
+
+        # Re-assemble heads and project back
         y = y.transpose(1, 2).contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
@@ -213,41 +215,22 @@ class GPT(nn.Module):
             return logits
     
     @torch.inference_mode()
-    def generate(model, tokens, max_tokens, temperature=1.0, top_k=None):
-        device = model.get_device()
-
-        kv_cache = KVCache(
-            n_layer=model.config.n_layer,
-            max_seq_len=model.config.sequence_len,
-            n_head=model.config.n_head,
-            head_dim=model.config.n_embd // model.config.n_head,
-            device=device,
-            dtype=model.transformer.wte.weight.dtype
-        )
-
-        ids = torch.tensor([tokens], dtype=torch.long, device=device)
-        generated_tokens = []
-
-        logits = model(ids, kv_cache=kv_cache)
-        kv_cache.update_pos(ids.size(1))
-
+    def generate(self, tokens, max_tokens, temperature=1.0, top_k=None):
+        assert isinstance(tokens, list)
+        device = self.get_device()
+        ids = torch.tensor([tokens], dtype=torch.long, device=device) # add batch dim
         for _ in range(max_tokens):
-            logits = logits[:, -1, :]  # last token logits
-
+            logits = self.forward(ids) # (B, T, vocab_size)
+            logits = logits[:, -1, :] # (B, vocab_size)
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float('inf')
-
+                logits[logits < v[:, [-1]]] = -float('Inf')
             if temperature > 0:
-                probs = F.softmax(logits / temperature, dim=-1)
+                logits = logits / temperature
+                probs = F.softmax(logits, dim=-1)
                 next_ids = torch.multinomial(probs, num_samples=1)
             else:
                 next_ids = torch.argmax(logits, dim=-1, keepdim=True)
-
             ids = torch.cat((ids, next_ids), dim=1)
-            generated_tokens.append(next_ids.item())
-
-            logits = model(next_ids, kv_cache=kv_cache)
-            kv_cache.update_pos(1)
-
-        return generated_tokens
+            token = next_ids.item()
+            yield token
