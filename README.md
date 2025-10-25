@@ -1,17 +1,16 @@
 # Arcane: A GPT-2 Inspired Model
 
-### Multimodal Support
-Arcane is a refined, educational GPT-style transformer model built in PyTorch. Inspired by GPT-2, it offers an accessible yet advanced implementation designed to illustrate modern techniques in transformer-based language modeling. Key enhancements include efficient activation checkpointing, rotary positional embeddings (RoPE), a custom RMS normalization layer with recomputation, and a modular design that facilitates further innovations such as low-rank adaptation (LoRA).
+Arcane is a streamlined, educational GPT-style transformer model built in PyTorch, inspired by GPT-2. It offers a clear and efficient implementation to demonstrate modern transformer techniques, with a focus on performance and modularity. Key features include rotary positional embeddings (RoPE), RMS normalization, key-value (KV) caching for efficient inference, and a custom MLP design.
 
 ## Features
-- **Compact Transformer Architecture**: A GPT-2–inspired model with a clear, modular structure.
-- **Efficient Normalization**: Uses an RMS normalization layer with activation checkpointing to reduce memory usage during training.
-- **Rotary Positional Embeddings (RoPE)**: Applies RoPE to enhance the positional encoding within self-attention.
-- **Memory-Efficient Self-Attention**: Implements multi-head causal self-attention with key/value caching and activation checkpointing.
-- **Advanced MLP Design**: Features a custom three-part feed-forward network that leverages SiLU activation.
-- **Optimized Weight Initialization**: Employs improved initialization schemes for both linear and embedding layers.
-- **Custom Optimizer Configuration**: Uses AdamW with distinct parameter groups for weight decay management.
-- **Robust Text Generation**: Supports top‑k and nucleus (top‑p) sampling methods for generating coherent sequences.
+- **Compact Transformer Architecture**: A modular GPT-2-inspired model with a focus on clarity and extensibility.
+- **RMS Normalization**: Implements a purely functional RMS normalization layer for stable and efficient training.
+- **Rotary Positional Embeddings (RoPE)**: Enhances positional encoding within self-attention using precomputed rotary embeddings.
+- **Causal Self-Attention with KV Caching**: Supports multi-head self-attention with key-value caching for faster inference.
+- **Custom MLP Design**: Features a feed-forward network with ReLU-squared activation for improved non-linearity.
+- **Optimized Weight Initialization**: Uses tailored initialization for linear and embedding layers to enhance training stability.
+- **Custom Optimizer Configuration**: Employs AdamW with separate parameter groups for weight decay management.
+- **Text Generation**: Supports temperature-based and top-k sampling for coherent sequence generation.
 
 ## Table of Contents
 - [Overview](#overview)
@@ -20,34 +19,36 @@ Arcane is a refined, educational GPT-style transformer model built in PyTorch. I
 - [Model Comparison](#model-comparison)
 
 ## Overview
-Arcane is based on the GPT-2 architecture and is built to help users learn how transformer models work by experimenting with a simplified model. The project includes support for **LoRA**, a fine-tuning technique that uses low-rank matrices to efficiently modify pre-trained models.
+Arcane is designed to help users understand transformer models through a clean, efficient implementation. It incorporates modern techniques like RoPE and KV caching, making it suitable for both educational exploration and practical experimentation.
 
 ### Key Concepts
-- **Transformer Blocks**: Multiple transformer layers with self-attention mechanisms.
-- **Multi-Head Self-Attention (MHSA)**: Implements attention across multiple heads.
-- **LoRA (Low-Rank Adaptation)**: Reduces the number of trainable parameters for efficient fine-tuning.
+- **Transformer Blocks**: Stacked layers with causal self-attention and MLP components.
+- **Multi-Head Self-Attention (MHSA)**: Implements attention with support for Grouped Query Attention (GQA).
+- **KV Caching**: Optimizes inference by storing key-value pairs for attention computations.
 
 ## Model Architecture
-Arcane is implemented in Python using **PyTorch**. The model contains the following key components:
+Arcane is implemented in Python using **PyTorch**. The model consists of the following components:
 
 1. **Embedding Layer**:
-   - Token embedding (`wte`): Maps vocabulary tokens to a dense representation.
-   - Positional embedding (`wpe`): Adds position information to the input tokens.
-   
-2. **Transformer Blocks**: Each block contains:
-   - **Causal Self-Attention**: Computes self-attention with optional LoRA layers.
-   - **MLP Layer**: A feed-forward network to project attention outputs.
-   - **Layer Normalization**: Applied before the self-attention and MLP layers.
-   
-3. **LoRA Layers**: Optional low-rank layers can be added to modify query and key projections for fine-tuning.
-   
-4. **Language Modeling Head**: A linear layer maps the final transformer output back to token logits.
+   - Token embedding (`wte`): Maps vocabulary tokens to dense representations (default: 50,304 tokens to 768 dimensions).
+   - No explicit positional embeddings; instead, RoPE is applied within the attention mechanism.
+
+2. **Transformer Blocks**: Each block (default: 12 layers) contains:
+   - **Causal Self-Attention**: Multi-head attention (default: 6 heads) with optional Grouped Query Attention, KV caching, and RoPE for positional encoding.
+   - **MLP Layer**: A feed-forward network with a 4x expansion (768 to 3072 dimensions) and ReLU-squared activation.
+   - **RMS Normalization**: Applied before attention and MLP layers, with no learnable parameters.
+
+3. **Language Modeling Head**: A linear layer maps transformer outputs to token logits, with a soft-capping mechanism (tanh with a cap of 15) for numerical stability.
+
+4. **Rotary Positional Embeddings (RoPE)**: Precomputes cosine and sine embeddings for up to 10x the sequence length (default: 10,240) in bfloat16 precision.
+
+5. **KV Caching**: Supports efficient inference by reusing key-value pairs across sequences, with dynamic attention masking for context-aware generation.
 
 ## Requirements
 To run this project, you need:
 - Python 3.10+
 - PyTorch 2.0+
-- `tiktoken` tokenizer library
+- `tiktoken` tokenizer library (optional, for tokenization)
 
 Install dependencies:
 ```bash
@@ -55,13 +56,15 @@ pip install torch tiktoken
 ```
 
 ## Model Training Performance
-The training and validation loss curves for the 3 models over training steps are shown below, the model was trained on 10B tokens which equates to 19073 steps for the 124M and 355M model and 9536 steps for the 1.3B model due to the increase in batch size.:
+The training and validation loss curves for the models over training steps are shown below. The model was trained on 10B tokens, equating to 19,073 steps for the 124M and 355M models and 9,536 steps for the 1.3B model due to increased batch size.
+
 ![Loss Graph](/Images/Train_Val_graph.png)
+
 | Model                 | Training Loss   | Validation Loss |
 |-----------------------|-----------------|-----------------|
 | Arcane 124M           | 3.07            | 3.00            |
-| Arcane 355M           | 2.89            | 2.88            | 
-| Arcane 1.3B           | 2.88            | 2.87            | 
+| Arcane 355M           | 2.89            | 2.88            |
+| Arcane 1.3B           | 2.88            | 2.87            |
 
 ## Model Comparison on HellaSwag Accuracy
 
@@ -70,17 +73,16 @@ The training and validation loss curves for the 3 models over training steps are
 | GPT-2 124M            | 100B        | 0.2955             | No   |
 | GPT-3 124M            | 300B        | 0.3357             | No   |
 | Custom LLM 124M       | 10B         | 0.3036             | No   |
-| Custom LLM 124M       | 10B         | 0.3083             | Yes  |
-| Custom LLM 355M       | 10B         | 0.3266             | Yes  |
-| Custom LLM 1.3B       | 10B         | 0.3414             | Yes  |
-| Custom LLM 1.3B       | 20B         | 0.3881             | Yes  |
+| Arcane 124M           | 10B         | 0.3083             | Yes  |
+| Arcane 355M           | 10B         | 0.3266             | Yes  |
+| Arcane 1.3B           | 10B         | 0.3414             | Yes  |
+| Arcane 1.3B           | 20B         | 0.3881             | Yes  |
 
 ## Future Implementations
-
-I plan to expand Arcane with the following features:
+Planned enhancements for Arcane include:
 
 ### Reinforcement Learning with Human Feedback (RLHF)
-Integrate RLHF to improve the model's performance by leveraging human feedback during training. This will help in refining the model's responses and making it more aligned with human expectations.
+Integrate RLHF to refine model responses using human feedback, improving alignment with user expectations.
 
 ### Proximal Policy Optimization (PPO)
-Implement PPO, a popular reinforcement learning algorithm, to optimize the policy of the model. This will enhance the model's ability to make decisions and generate more accurate and contextually appropriate responses.
+Implement PPO to optimize the model's policy, enhancing decision-making and response quality.
