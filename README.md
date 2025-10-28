@@ -68,7 +68,7 @@ The training and validation loss curves for the models over training steps are s
 
 ## Future Implementations
 Planned enhancements for Arcane include:
-- ### Reinforcement Learning with Human Feedback (RLHF)
+- **Reinforcement Learning with Human Feedback (RLHF)**
    - Integrate RLHF to refine model responses using human feedback, improving alignment with user expectations.
-- ### Proximal Policy Optimization (PPO)
+- **Proximal Policy Optimization (PPO)**
    - Implement PPO to optimize the model's policy, enhancing decision-making and response quality.
