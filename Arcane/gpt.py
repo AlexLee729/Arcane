@@ -139,26 +139,28 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Forward pass for GPT model."""
-        device = idx.device
+    def forward(self, idx, targets = None):
         B, T = idx.size()
         assert T <= self.config.block_size, f"Sequence length {T} exceeds block size {self.config.block_size}"
 
-        # Forward pass
-        x = self.transformer.wte(idx)  # (B, T, n_embd)
+        x = self.transformer.wte(idx)
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
 
+        logits = self.lm_head(x)  # always return full sequence logits
+
         if targets is not None:
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)), 
+                targets.view(-1), 
+                ignore_index=-1
+            )
         else:
-            logits = self.lm_head(x[:, [-1], :])
             loss = None
 
         return logits, loss
+
 
     def configure_optimizers(self, weight_decay: float, learning_rate: float) -> torch.optim.AdamW:
         """Configure AdamW optimizer with parameter-specific weight decay."""
