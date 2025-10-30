@@ -66,23 +66,9 @@ The training and validation loss curves for the models over training steps are s
 | Arcane 355M           | 2.89            | 2.88            |
 | Arcane 1.3B           | 2.88            | 2.87            |
 
-## Model Comparison on HellaSwag Accuracy
-
-| Model                 | Data Size   | HellaSwag Accuracy | RoPE |
-|-----------------------|-------------|--------------------|------|
-| GPT-2 124M            | 100B        | 0.2955             | No   |
-| GPT-3 124M            | 300B        | 0.3357             | No   |
-| Custom LLM 124M       | 10B         | 0.3036             | No   |
-| Arcane 124M           | 10B         | 0.3083             | Yes  |
-| Arcane 355M           | 10B         | 0.3266             | Yes  |
-| Arcane 1.3B           | 10B         | 0.3414             | Yes  |
-| Arcane 1.3B           | 20B         | 0.3881             | Yes  |
-
 ## Future Implementations
 Planned enhancements for Arcane include:
-
-### Reinforcement Learning with Human Feedback (RLHF)
-Integrate RLHF to refine model responses using human feedback, improving alignment with user expectations.
-
-### Proximal Policy Optimization (PPO)
-Implement PPO to optimize the model's policy, enhancing decision-making and response quality.
+- **Reinforcement Learning with Human Feedback (RLHF)**
+   - Integrate RLHF to refine model responses using human feedback, improving alignment with user expectations.
+- **Proximal Policy Optimization (PPO)**
+   - Implement PPO to optimize the model's policy, enhancing decision-making and response quality.
